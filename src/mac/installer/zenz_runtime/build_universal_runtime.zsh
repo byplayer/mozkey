@@ -10,6 +10,8 @@ LLAMA_TAG="b10268"
 LLAMA_COMMIT="6b5224cfccdb9caf4c0a0a87692fddad22c7e969"
 PATCH_SHA256="6db5c11b2da8415d6b37200ec6aa4f3fdcdde8efb1e7a71375fe331a7b0e829a"
 PATCHED_SOURCE_SHA256="36d8d6db0603a511ea4a490a8f0da28e2054327e3d4fe9b9e1481a2150eb1317"
+DUAL_LIVENESS_PATCH_SHA256="3267e978f61456c32dfb83b15bf0f3a75393c5f98c946ee7a2846f7121b36dda"
+DUAL_LIVENESS_MAIN_SHA256="2197ffc83775b865b97b35528a99f1daa692cf25eb4e952509e46e2cfebbf976"
 
 MODEL_REPOSITORY="Miwa-Keita/zenz-v3.2-small-gguf"
 MODEL_REVISION="c67e03e07d215c869f591b274c1631170d3e11fe"
@@ -130,6 +132,7 @@ fi
 script_path="${0:A}"
 script_dir="${script_path:h}"
 patch_file="$script_dir/patches/llama-vocab-gpt2-small-japanese-char.patch"
+dual_patch_file="$script_dir/patches/llama-server-mozkey-dual-liveness.patch"
 
 [[ -f "$patch_file" ]] ||
   die "Tracked patch missing: $patch_file"
@@ -138,6 +141,9 @@ actual_patch_sha="$(sha256_file "$patch_file")"
 
 [[ "$actual_patch_sha" == "$PATCH_SHA256" ]] ||
   die "Tracked patch SHA-256 mismatch"
+[[ -f "$dual_patch_file" ]] || die "Missing dual-liveness patch"
+[[ "$(sha256_file "$dual_patch_file")" == "$DUAL_LIVENESS_PATCH_SHA256" ]] ||
+  die "Dual-liveness patch SHA256 mismatch"
 
 host_arch="$(/usr/bin/uname -m)"
 
@@ -327,6 +333,13 @@ echo "Patched llama-vocab.cpp SHA256 = $patched_source_sha"
 
 [[ "$patched_source_sha" == "$PATCHED_SOURCE_SHA256" ]] ||
   die "Patched llama-vocab.cpp identity mismatch"
+
+# Keep the existing tokenizer patch intact; apply a second independent patch
+# against the pinned upstream server entrypoint only.
+git -C "$source_dir" apply --check "$dual_patch_file"
+git -C "$source_dir" apply "$dual_patch_file"
+[[ "$(sha256_file "$source_dir/tools/server/main.cpp")" == "$DUAL_LIVENESS_MAIN_SHA256" ]] ||
+  die "Patched llama-server main.cpp identity mismatch"
 
 echo
 echo "===== BUILD BOTH THIN RUNTIMES ====="
@@ -610,6 +623,12 @@ finally:
 PY
 
 echo
+# The exact opt-in switch must be present in both universal slices.
+for thin in "$extracted_arm" "$extracted_x86"; do
+  /usr/bin/strings "$thin" | /usr/bin/grep -F --     '--mozkey-zenz-dual-liveness-v1' >/dev/null ||
+    die "Missing dual-liveness opt-in marker in $thin"
+done
+
 echo "===== WRITE BUILD CONTRACT ====="
 
 builder_sha="$(sha256_file "$script_path")"
@@ -626,6 +645,8 @@ llama_cpp_tag=$LLAMA_TAG
 llama_cpp_commit=$LLAMA_COMMIT
 zenz_patch_sha256=$PATCH_SHA256
 patched_llama_vocab_sha256=$PATCHED_SOURCE_SHA256
+mozkey_dual_liveness_patch_sha256=$DUAL_LIVENESS_PATCH_SHA256
+patched_llama_server_main_sha256=$DUAL_LIVENESS_MAIN_SHA256
 model_repository=$MODEL_REPOSITORY
 model_revision=$MODEL_REVISION
 model_remote_file=$MODEL_REMOTE_FILE

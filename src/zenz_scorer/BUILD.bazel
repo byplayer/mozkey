@@ -3,6 +3,7 @@ load(
     "mozc_cc_binary",
     "mozc_cc_library",
     "mozc_cc_test",
+    "mozc_win32_resource_from_template",
 )
 
 package(default_visibility = ["//visibility:private"])
@@ -39,9 +40,22 @@ mozc_cc_test(
 mozc_cc_library(
     name = "llama_server_process",
     srcs = ["llama_server_process.cc"],
-    hdrs = ["llama_server_process.h"],
+    hdrs = [
+        "llama_server_guard_protocol.h",
+        "llama_server_process.h",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
     deps = [":llama_http_client"],
+)
+
+mozc_cc_binary(
+    name = "mozc_zenz_guard",
+    srcs = [
+        "llama_server_guard.cc",
+        "llama_server_guard_protocol.h",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//mac/installer/zenz_runtime:__pkg__"],
 )
 
 mozc_cc_binary(
@@ -54,7 +68,10 @@ mozc_cc_test(
     name = "llama_server_process_test",
     size = "small",
     srcs = ["llama_server_process_test.cc"],
-    data = [":llama_server_process_test_helper"],
+    data = [
+        ":llama_server_process_test_helper",
+        ":mozc_zenz_guard",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         ":llama_server_process",
@@ -104,7 +121,10 @@ mozc_cc_test(
     name = "posix_runtime_test",
     size = "small",
     srcs = ["posix_runtime_test.cc"],
-    data = [":llama_server_process_test_helper"],
+    data = [
+        ":llama_server_process_test_helper",
+        ":mozc_zenz_guard",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         ":posix_runtime",
@@ -166,8 +186,14 @@ mozc_cc_binary(
             ":posix_runtime",
             "//zenz:unix_socket_path",
         ],
+        "@platforms//os:windows": [":mozc_zenz_scorer_resources"],
         "//conditions:default": [],
     }),
+)
+
+mozc_win32_resource_from_template(
+    name = "mozc_zenz_scorer_resources",
+    src = "mozc_zenz_scorer.rc",
 )
 
 # Package-level release verification helper. Keep it in //zenz_scorer so it

@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="src/data/images/icon.svg" width="112" height="112" alt="Mozkey icon">
 </p>
 
@@ -57,6 +57,19 @@ Windows 用のビルド済み MSI は [Releases](https://github.com/koyasi777/mo
 > 個人用 fork の experimental / pre-release build です。
 > MSI は署名されていないため、Windows の警告が表示される場合があります。
 
+### macOSでの初期設定（開発用PKG）
+
+現在、macOS用のビルド済みPKGはReleasesで公開していません。以下は、検証済みのインストール可能な開発用PKGを導入した場合の手順です。通常のOSSビルドで生成されるguarded PKGはインストールできません。ビルド条件については[macOS Zenz対応Universal PKGのビルド](#macos-zenz-対応-universal-pkg-のビルド)を参照してください。
+
+1. インストール後、macOSからログアウトし、再ログインします。
+2. 「システム設定」→「キーボード」→「テキスト入力」の「編集」を開きます。
+3. 入力ソースに「Hiragana (Mozkey)」（表示言語によっては「ひらがな（Mozkey）」）が登録されていれば追加は不要です。登録されていない場合は「+」→「日本語」からMozkeyのひらがな入力ソースを探して追加します。
+4. メニューバーの入力メニューからMozkeyのひらがな入力ソースを選択します。
+
+macOS 0.7.7の実機検証では、インストール直後に入力メニューへ表示されなくても、ログアウト・再ログイン後に「Hiragana (Mozkey)」が利用可能になりました。入力ソースの反映に時間がかかる原因は未確定であり、すべての環境で同じ手順・結果になると保証するものではありません。
+
+macOSの入力ソース設定の操作方法は[Apple公式ガイド](https://support.apple.com/ja-jp/guide/mac-help/mchl84525d76/27/mac/27)も参照してください。
+
 <br>
 
 主な追加機能
@@ -77,19 +90,24 @@ Windows 用のビルド済み MSI は [Releases](https://github.com/koyasi777/mo
 - ライブ変換を使わない場合も、既定で初回の変換操作で第1候補のまま候補ウィンドウを開ける（設定で無効化可能）
 - ライブ変換は入力直後の不要な変換ちらつきを抑えるため、文字入力後に短いデバウンスを挟んで実行
 - ローマ字入力中、確定済みの読みの後ろに未解決のローマ字 suffix が残る間は、入力途中の一時的な Roman prefix ごとに passive suggestion を再計算して候補ウィンドウがちらつくのを抑えるため、直前まで表示していた候補を保持。suffix が解決した時点で更新を再開し、候補へ移動する場合も表示中の候補集合をそのまま使用
+- 明示的に選んで確定したサジェストについて、候補が持つ全文の読みと、通常変換で検証できた文節・候補順位を使ってユーザーセグメント履歴の学習を補強。確定結果やサジェスト履歴は従来どおり維持し、検証できない文節や順位は推測で学習しない
 - デフォルトでは 1 文字だけの未確定文字列で、助詞などの誤変換を避けるためライブ変換を実行しない
 - `え~`、`えー`、`ん？` のような「かな1文字 + 装飾的な末尾記号」でも、短すぎる漢字化を避けるためライブ変換を抑制
 - `うっそ`、`くっそ`、`やっば`、`すっげぇ`、`めっちゃ`、`ちっす`、`ちょりっす`、`ほえ～`、`ほぇ～`、`ほっほーん` などの expressive kana を生成辞書で自然なかな候補として補強
 - 確定済みの左文脈や直前の文節、限定的な右文脈を参照し、`mainにマージしました`、`githubには`、`彼になった`、`彼なのか`、`2名しかいない`、`追記したい`、`山梨県立美術館`、`滋賀方面` のような文脈で、助詞・複合機能語・名詞相当の左文脈に続く叙述・疑問の機能語列・機能表現・接尾的な語構成・地名接尾構成が同音漢字候補に負ける挙動を抑制
 - キー設定エディタで、1つのキー入力に対して複数のコマンドを順序付きで割り当て可能
+- `ForceZenzLiveCorrection` により、未確定文字列へ手動で Zenz 補正を要求可能。Zenz の自動ライブ補正が OFF でもキー設定から明示実行できる
+- `ForceZenzLiveCorrectionWithoutFeedback` により、保存済み Zenz feedback の自動利用をこの実行に限り無視して手動補正可能。通常の Mozc 履歴・ユーザー辞書および明示的な手動ブロックは維持し、新しい確定結果の学習も設定に従う
+- キー設定のコマンド列に `Delay(700)` などの待機ステップ（0～5000 ms）を追加。選択文字列の再変換後に待機して手動 Zenz 補正する操作にも対応
 - 変換候補・予測候補をキー操作から履歴削除または非表示にできる機能を追加。標準キー設定では `Ctrl+Delete` を使用し、履歴から削除できる候補はまず学習履歴だけを削除。それでも残る候補はユーザー辞書「非表示候補」の抑制単語として登録し、元のユーザー辞書候補そのものは削除しない。「非表示候補」から該当する抑制単語を削除すると再表示可能。候補ウィンドウのフッターには、選択中の候補の状態と現在のキー設定に応じて履歴削除または候補非表示の操作案内を表示
 - 通常変換では、Mozc が顔文字として意味的に識別できる候補（標準の顔文字候補、およびユーザー辞書で品詞「顔文字」として登録された候補）が、学習によって第1候補へ上がらないように制御。候補自体は一覧に残し、同じ表記でも「顔文字」以外の品詞として登録した候補は通常の順位付け・学習を許可。Zenz が独立して生成した表記は、文字列の見た目だけを理由に顔文字扱いしない
 - 複数コマンドは `Commit|IMEOff` のような形式で保存され、設定画面では `Commit → IMEOff` のように編集可能
 - MS-IME 風キー設定では、確定済み文字列を選択した状態で Space を押すと再変換し、未選択時は従来どおり空白を入力
-- Windows 版で左 Shift / 右 Shift / 左 Ctrl / 右 Ctrl を個別キーとして設定画面から割り当て可能
+- Windows 版のキー設定で、Ctrl / Shift の左右条件を独立して「左右どちらでも / 左のみ / 右のみ」から選択可能。従来の汎用 Ctrl / Shift 割り当ても維持し、競合する異なるコマンドの割り当ては保存時に検出
 - Windows 版で IMEOn / IMEOff に割り当てたキーを押した場合、すでに同じ状態でも IME モードインジケータを表示
+- Windows 版で Shift などによる一時的な半角英数字入力中に `IMEOn` を押すと、未確定文字列を確定せずにひらがな入力へ復帰
 - Windows 版の設定画面から、Mozkey を Windows の既定 IME として明示的に設定し、変更前の既定 IME 設定へ戻せるボタンを追加
-- Windows 版の設定画面から、タスクバーや IME 一覧に表示される Mozkey の IME アイコンを、既定 / モノクロ（黒）/ モノクロ（白）から選択可能
+- Windows 版の設定画面から、タスクバーや IME 一覧に表示される Mozkey の IME アイコンを、既定 / モノクロ（ライト・ダーク対応）/ モノクロ（黒）/ モノクロ（白）から選択可能
 - Windows Search などの immersive TSF ホストでは、候補ウィンドウ・サジェストウィンドウ・ライブ変換中のルビをホストプロセス内の renderer 経路で表示し、前面表示とマウス操作を安定化。未選択のサジェストは mouse-down だけで通常変換へ移行せず、mouse-up で実際に押したサジェストを確定
 - Windows / macOS 版の候補ウィンドウ・サジェストウィンドウ・ライブ変換中のルビ表示について、ライト / ダーク / 自動（システムテーマに合わせる）/ カスタム配色、サイズ、角丸、透明度、影を設定画面から個別に調整可能。新規設定では3項目とも「自動」が既定
 - Windows 版のルビ表示は、表示先モニターの DPI に合わせて位置・サイズを補正し、左右の余白、上下の余白、入力文字との距離を設定可能
@@ -99,9 +117,10 @@ Windows 用のビルド済み MSI は [Releases](https://github.com/koyasi777/mo
 - Windows / macOS 版の縦書き入力で、候補ウィンドウ・サジェスト・用例表示・ライブ変換中のルビを縦書きレイアウトとして表示し、対応するキー設定では候補・文節移動も視覚方向に合わせて操作可能
 - Windows / macOS 版では、縦書き時の連鎖候補ウィンドウを現在候補から本文の外側へ展開するよう配置し、必要に応じて反対側へフォールバック
 - ライブ変換中のルビ表示を設定画面から ON/OFF 可能
-- Windows 版で未確定文字の文字色・背景色・下線色を設定画面からカスタマイズ可能。入力中の文字、変換中の文節、Zenz ライブ補正を個別に設定でき、Zenz ライブ補正の下線は新規・未設定プロファイルで既定 ON、既定色は `#C4DC6C`
+- Windows 版で未確定文字の文字色・背景色・下線色を設定画面からカスタマイズ可能。「入力中の文字」「変換中の文節」「Zenz 補正中の文字」を個別に設定でき、「Zenz 補正中の文字」の下線は新規・未設定プロファイルで既定 ON、既定色は `#C4DC6C`
 - Windows 版のローマ字入力で、変換規則の途中にある末尾の未確定ローマ字だけを薄く表示する opt-in 機能を追加。既定は OFF で、薄さは 0～100%（既定 85%）の範囲で調整可能。100% は背景色と同じになり不可視
 - Windows 版の IME 切り替えインジケータは、設定画面から「システムテーマに合わせる / ダーク / ライト / カスタム」を選択可能。カスタムでは入力モード別の配色とサイズ・角丸・枠線・影を調整でき、画面端付近では表示位置を自動調整
+- Windows TSF の `IS_PRIVATE` が指定された入力では、保存済みの Mozc 学習履歴と Zenz feedback を引き続き利用しながら、新しい永続学習を書き込まない。Mozkey のシークレットモードとは別に扱い、private input 中はタスクバーの入力モード表示と IME 切り替えインジケータに盾を表示。タスクバーの通常入力モード・private・無効表示は Windows のライト / ダークテーマへ追従
 - system dictionary 強化用の追加辞書生成パイプラインを追加
 - 日常語彙・実務語彙・外来語・英語綴り候補を小さな manual override 辞書として段階的に補強し、通常語彙は自然な第一候補、英語綴りは補助候補として扱う評価運用を追加
 - merge-ut-dictionaries 由来の地名・SudachiDict 系語彙を system dictionary に取り込めるようにした
@@ -119,28 +138,29 @@ Windows 用のビルド済み MSI は [Releases](https://github.com/koyasi777/mo
 - Zenz が必要とする preceding / following の長さを Server から Client へ通知し、Windows TSF / macOS IMK では要求された方向・長さだけ surrounding text を追加取得。右文脈は有効時に設定可能で、取得長の既定は 6 文字
 - Zenz の前方・後方文脈を用途に応じて独立して選択し、Unicode-aware な文字種判定と privacy filtering を共通処理として適用
 - Windows 版では、Zenz 補正を `mozc_server` から named pipe 経由で `mozc_zenz_scorer.exe` に依頼し、`llama-server.exe` の localhost endpoint でローカル推論
-- Zenz 補正開始までの遅延時間を設定画面から変更可能。デフォルトは 1000 ms
+- Zenz 補正開始までの遅延時間を設定画面から変更可能。新規・未設定時のデフォルトは 700 ms（保存済みの設定値は維持）
 - Zenz 補正開始の最小文字数を設定画面から変更可能
 - 「Zenz 補正結果が返るまで通常のライブ変換結果を表示しない」opt-in 設定を追加。待機中は直前まで安定して表示されていた Zenz 補正部分を可能な範囲で維持し、未解決のローマ字 suffix はその表示へ追従。Zenz が採用されない場合は現在の Mozc ライブ変換結果へフォールバック
 - deferred 表示専用の最大待機時間を設定画面から変更可能。既定は Zenz 補正要求の送信後 250 ms で、期限を超えた generation は破棄して、すでに計算済みの Mozc ライブ変換結果へフォールバック
 - deferred 表示中の Enter / Shift による英字入力では、裏側の Mozc baseline ではなく、その時点でユーザーに見えている presentation を確定。Enter 確定後の Undo でも同じ presentation を復元
 - Zenz 出力が確定済み左文脈の長い suffix を現在入力の先頭へ反復する context echo を検出して拒否し、通常の Mozc ライブ変換結果へフォールバック
-- Zenz 補正結果のローカル feedback learning を追加。設定画面から ON/OFF 可能
+- Zenz の学習機能を「Zenz 学習（Mozc変換履歴）」と「Zenz 学習（補正フィードバック）」に整理し、次の3設定を**独立して** ON/OFF 可能にした。A：Zenz 補正の採用・却下を TSV に記録する、B：保存済み feedback を候補順位・高速再利用・自動ブロックへ利用する、C：明示的に確定した Zenz 補正を Mozc の通常変換履歴へ追加学習する。A=OFF でも B=ON なら既存 feedback を利用でき、A=OFF でも C=ON なら Mozc 履歴へ追加学習できる。旧統合設定からは未設定の新項目だけ値を引き継ぐ
+- 同音異義語が多く文脈によって適切な表記が変わりやすい短い読みで、Zenz feedback の過剰な学習反映を避けるため、保存済み feedback の自動適用を既定では読み全体が 7 文字以上の場合に限定。設定画面から ON/OFF と最小読み文字数（1～20 文字）を変更可能。短い読みの採用・却下履歴は記録・保持し、手動ブロックは引き続き有効
 - シークレットモードでは Zenz のローカル推論を継続したまま Zenz feedback personalization（学習・保存済み feedback の再利用）を無効化。新しい feedback は保存せず、既存 feedback 自体は削除しない
 - Zenz feedback の自動ブロック設定を追加。同じ読み全体・同じ文脈クラス・同じ補正結果について、通常却下回数が「最低拒否回数」と「採用回数 + 通常却下回数に占める最低拒否割合」の両方に達した場合だけ自動ブロックする。未保存の設定では既定で有効、最低拒否回数は 1 回、最低拒否割合は 50%。自動ブロックは TSV に hard reject を固定保存せず、現在の設定と既存 feedback から動的に再評価する
 - 自動ブロック中も Zenz 推論は shadow observation として継続する。同じ読みで非表示の Zenz 結果と最終確定値が一致すれば accepted feedback を加算して自己回復でき、拒否割合がしきい値を下回れば自動的にブロックを解除する。同じ読みで異なる値が確定した場合は通常却下を加算し、入力継続などで最終的な読みが変わった場合は neutral として扱う。明示的な hard reject はこの自己回復の対象外
 - 同じ読み全体・同じ文脈クラス・同じ補正結果で通常却下回数が採用回数を上回る場合は、auto-block 無効時でも Zenz feedback による優先候補・保存済み feedback による即時補正としては使わず、「却下数優勢」の中立状態として扱います。これは hard block ではなく、Zenz が新しく同じ補正を返すことや通常 Mozc 候補を削除することはありません。
-- Zenz feedback は、Zenz 補正結果が表示されただけでは保存されません。Enter や句読点・記号の単打確定などで表示中の Zenz 結果が明示的に確定された時点で、accepted feedback をローカル TSV へ即時保存し、その確定に対する短い rollback window を保持します
-- rollback window 内で直後に Backspace / Escape / Revert / Undo / Ctrl+Z などの取り消し操作が入った場合は、`accepted_rollback` を追記して直前の accepted 1 件を補償します。これは rejected feedback ではなく、通常却下回数や auto-block の negative evidence を増やしません。次の実テキスト入力や確定後の context transition で window が閉じた場合は accepted を保持し、IMEOff / MakeSureIMEOff も取り消しではなく確定扱いにします
+- フィードバック記録（A）が ON の場合、Zenz 補正結果が表示されただけでは保存せず、Enter や句読点・記号の単打確定などで明示的に確定された時点で accepted feedback をローカル TSV へ即時保存する。採用記録の書き込みに失敗した場合は、Undo で補償レコードを追記して以前の正常な採用履歴を減算しないようにする
+- rollback window 内の Backspace / Escape / Revert / Undo / Ctrl+Z などでは、**書き込みに成功した accepted 記録だけ** `accepted_rollback` で補償する。これは rejected feedback ではない。Mozc 変換履歴（C）の取消は別の可逆履歴ハンドルで処理する。次の実テキスト入力や確定後の context transition で window が閉じた場合は accepted を保持し、IMEOff / MakeSureIMEOff も確定扱いにする
 - Zenz 補正表示後に Space や候補移動などで通常変換へ移った場合は、その操作だけで rejected feedback を即時確定せず、通常 Mozc 側で最終的に確定された値を確認してから判定する。最終確定値が Zenz 補正結果と異なる場合は通常却下として記録し、同じ結果を確定した場合は不要な reject を残さない。通常操作由来の rejected feedback は候補を殺す hard reject ではなく、順位調整用の弱い negative signal として扱う
 - Zenz 補正表示中に Space で Mozc 通常変換結果へ戻した場合は、次の文字入力や句読点・記号の単打確定で、戻した通常 Mozc の結果を先に最終確定値として取得する。句読点・記号の単打確定後も短い rollback window を維持し、直後の Backspace / Escape / Ctrl+Z / Revert / Undo などでは pending な Zenz reject を破棄する。次の通常入力や確定後の context transition、Windows Search などでの pass-through Enter を含む通常の pass-through 操作へ進んだ時点で rollback window を閉じ、最終確定結果に基づいて feedback を確定する
-- Zenz 学習データを設定画面から安全に管理できる UI を追加。TSV を直接編集せず、検索、インポート、エクスポート、選択項目削除、全削除が可能
-- Zenz 学習データ管理画面から、選択した Zenz 補正を明示的にブロック可能。ブロック済みの補正は再ブロックできず、解除したい場合は該当エントリを削除して必要に応じて再学習する
-- Zenz feedback を通常変換候補の ranking に利用。1 文節の通常変換では、保存済み feedback を score 化し、既存候補があれば cost を調整し、候補にない場合は synthetic candidate として候補集合の自然な位置へ追加。accepted feedback は順位を上げ、通常操作由来の rejected feedback は候補を除外せず順位を下げる
+- Zenz の**フィードバック学習データ**を設定画面から管理できる UI を追加。TSV を直接編集せず検索、インポート、エクスポート、選択項目削除、全削除が可能。ここで管理・削除するのは A/B の記録であり、C で Mozc の通常変換履歴に学習済みの内容は削除しない
+- フィードバック学習データ管理画面から、選択した Zenz 補正を明示的に手動ブロック可能。手動ブロックは B の自動利用設定が OFF でも Zenz 補正の採用判定に有効。解除するには該当エントリを削除し、必要なら再学習する
+- B が ON の場合は Zenz feedback を通常変換候補の ranking に利用。1 文節の通常変換では保存済み feedback を score 化し、既存候補の cost を調整するか synthetic candidate を自然な位置へ追加。accepted は順位を上げ、通常操作由来の rejected は候補を除外せず順位を下げる
 - 文節境界を壊さないため、複数文節に分かれた通常変換では Zenz feedback による通常候補 ranking を行わない
 - 複数文節に分かれるライブ変換では、全文補正の学習を保つため、accepted Zenz feedback を session-level live correction fast path として再利用
 - sensitive-like context で得られた feedback は、通常文脈の候補 ranking / reuse には使わない
-- accepted として明示的に確定した Zenz 候補は、条件を満たす場合、その commit 点で Mozc の user history にも外部変換結果として即時学習します。学習後は in-process の rollback handle を保持し、rollback window 内の Backspace / Escape / Revert / Undo などでは generalized Mozc history も revert します。次の実テキスト入力や確定後の context transition で window が閉じた後は学習を保持します
+- Mozc 変換履歴への追加学習（C）が ON で通常の履歴学習・プライバシー条件を満たす場合、明示的に確定した Zenz 補正を commit 点で Mozc の user history に即時学習する。A の記録設定とは独立。学習後は in-process の rollback handle を保持し、直後の Backspace / Escape / Revert / Undo などでは Mozc history 側の学習を revert する
 - accepted Zenz 補正は、直前の通常 Mozc ライブ変換文節へ安全に対応付けられる場合、既知の文節境界を優先してユーザー履歴を参照しない固定境界再評価を行い、必要な範囲だけ Mozc native の再文節化で検証してから外部 multi-segment commit として Mozc history に学習。複数の境界解釈が残る範囲や安全に解決できない範囲では、その推定境界を使った局所・境界学習を行わず、句読点などの区切りもまたいで学習しない。通常変換候補を再利用できる場合は candidate 構造を引き継ぎ、Zenz が実際に変更した語彙単位だけを強い選択履歴として扱う。安全な局所学習を1件も確定できなかった場合は、別経路の full-sequence Mozc-history fallback を試みる
 - 通常 Mozc ライブ変換で現在の結果として現れているユーザー辞書由来候補や ASCII / mixed-script 表記を、Zenz live correction の採用時に保護
 - ASCII / mixed-script 表記は、読みを安全に特定できる場合に Zenz prompt 内で一時 placeholder 化し、応答後に元の表記へ復元。`もずきー -> Mozkey` のような表記が `モズキー` へ上書きされるのを避けつつ、前後の文は補正できるようにした
@@ -176,6 +196,8 @@ Zenz の localhost 通信は、固定 endpoint に依存しないようにし、
 Zenz feedback learning は、完全な読み、完全な候補、粗い文脈クラス、採用/却下回数、理由 marker などの full-sequence 単位のローカル学習情報だけを保存します。生の左文脈は保存しません。feedback に使う文脈は、`empty`、`japanese_only`、`japanese_with_punctuation`、`mixed_japanese_ascii`、`sensitive_like` などの非可逆な context class に落とします。segment-local や lexical-unit の学習は Zenz feedback TSV には保存せず、安全な局所学習は Mozc history 側の責務として扱います。
 
 シークレットモードでは、Zenz のローカル推論自体は継続しますが、Zenz feedback personalization は無効になります。保存済み feedback は候補 ranking、session-level fast path、feedback decision に参照せず、新しい `accepted` / `rejected` / `accepted_rollback` feedback も保存しません。既存の feedback TSV は削除せず、シークレットモードを終了すると再び利用できます。
+
+Windows TSF の `IS_PRIVATE` は、Mozkey のシークレットモードとは別の privacy signal として扱います。Chrome Incognito、Edge InPrivate、Firefox Private Browser など、入力欄の TSF input scope に `IS_PRIVATE` が含まれる場合、保存済みの Mozc 学習履歴（変換・サジェスト）と Zenz feedback は読み取り可能なまま維持し、Zenz のローカル推論も継続します。一方、その private input を起点とする新しい Mozc history、サジェスト履歴、Zenz feedback、および Zenz から Mozc history への永続学習は書き込みません。既存の学習データ自体は削除しません。`IS_PRIVATE` と password input scope は別に扱い、password field の既存の保護は維持します。
 
 さらに、リリース時には Mozc core runtime binaries にテレメトリ、アップデータ、クラッシュアップロード、使用統計関連の危険な marker が含まれないことを確認します。
 
@@ -283,7 +305,7 @@ Windows の Zenz named-pipe 通信は、接続・request/response I/O を有限�
 
 Zenz に渡す surrounding context は、通常 Mozc の generic context とは分離した専用 field を使用します。Server は Zenz 補正に必要な preceding / following length を Client へ通知し、Windows TSF と macOS IMK は要求された方向・長さだけを追加取得して、`zenz_preceding_text` / `zenz_following_text` として渡します。通常 Mozc の surrounding text semantics は変更しません。
 
-Zenz 補正は設定可能なデバウンス時間の後に実行されます。デフォルトは 1000 ms です。また、Zenz 補正を開始する最小文字数も設定画面から変更できます。Zenz 結果が返る前に入力内容が変わった場合、古い結果は generation / key の検査により破棄されます。
+Zenz 補正は設定可能なデバウンス時間の後に実行されます。新規・未設定時のデフォルトは 700 ms です。すでに遅延時間が保存されている場合は、そのユーザー設定値を維持します。また、Zenz 補正を開始する最小文字数も設定画面から変更できます。Zenz 結果が返る前に入力内容が変わった場合、古い結果は generation / key の検査により破棄されます。
 
 deferred 表示で Zenz の応答を待っている間に Space を押した場合は、候補を次へ進めず、まずその時点の Mozc 通常変換結果を表示します。Enter はその瞬間に見えている presentation をそのまま確定し、Undo では同じ presentation を未確定状態として復元します。Shift による英字入力へ移る場合も、表示中の presentation を先に確定してから英字入力を開始します。Backspace では削除後の Mozc 結果を即時に反映し、そのキー操作だけで新しい Zenz 補正を直ちに走らせず、続く実テキスト入力から通常の deferred Zenz scheduling を再開します。
 
@@ -307,17 +329,39 @@ Zenz ライブ補正は password field では実行されません。また、�
 
 Windows TSF の password input scope と macOS の Secure Event Input では、application の surrounding text を Zenz 用に取得せず、Zenz extended context acquisition も実行しません。
 
-Zenz feedback learning は任意機能です。有効な場合でも、Zenz 補正結果が表示されただけでは保存されません。Enter や句読点・記号の単打確定などで、表示中の Zenz 結果が明示的に確定された時点で、その full-sequence accepted feedback をローカル TSV に即時保存します。
+#### Zenz 学習の独立設定
+
+設定画面では、**「Zenz 学習（Mozc変換履歴）」** と **「Zenz 学習（補正フィードバック）」** を別の項目として設定できます。
+
+| 設定 | 対象 | OFF の場合 |
+| --- | --- | --- |
+| **C：確定した Zenz 補正を Mozc の変換履歴に追加学習する** | 明示的に確定した Zenz 補正の Mozc 通常変換履歴への追加学習 | Zenz 起点の追加学習を行わない。通常の Mozc 変換履歴機能そのものを無効化する設定ではない |
+| **A：Zenz 補正の採用・却下を記録する** | ローカル TSV の accepted / rejected 観測 | 新たなフィードバックを記録しない。すでに保存済みの記録は削除しない |
+| **B：記録したフィードバックを変換に自動利用する** | 保存済み記録に基づく候補順位調整、ライブ変換での高速再利用、統計的自動ブロック | 自動適用を行わない。明示的な手動ブロック（hard reject）は引き続き有効 |
+
+A・B・C は相互に独立しています。例えば **A=OFF / B=ON** なら既存データの利用だけを続けられ、**A=OFF / C=ON** ならフィードバック TSV を増やさずに Mozc 変換履歴への追加学習を行えます。新規 Mozkey 設定では3つとも ON が既定です。旧統合設定を保存済みの場合は、新項目がまだ明示されていないときだけその値を引き継ぎ、設定済みの新項目は上書きしません。
+
+A が ON の場合でも、Zenz 補正を表示しただけでは記録しません。Enter や句読点・記号の単打確定などで明示的に確定した場合に、full-sequence accepted feedback を TSV へ追加します。C による Mozc 履歴の学習は別の保存先・条件で動作します。
+
+#### 短い読みの Zenz feedback 自動適用制限
+
+短い読みは同音異義語が多く、適切な表記が前後の文脈によって変わりやすいため、少数の Zenz feedback を一般的な表記選好として強く再利用すると、別の文脈でも特定の候補が過度に優先・抑制されるおそれがあります。これを防ぐため、**feedback の記録は継続しながら、短い読みへの自動的な学習反映を控える**設計にしています。7 文字は同音異義性の有無を厳密に判定する境界ではなく、誤った優先・抑制の影響を抑えるための調整可能な初期値です。
+
+初期設定では「短い読みでは Zenz feedback を自動適用しない」が **ON**、最小読み文字数は **7 文字**です。判定はローマ字の打鍵数や UTF-8 バイト数ではなく、feedback の読み全体に含まれる Unicode コードポイント数（Unicode scalar value に相当）で行います。たとえば `あしたはあめ`（6 文字）は対象外、`おねがいします`（7 文字）は対象です。設定画面では制限の ON/OFF と最小値（1～20 文字）を変更できます。
+
+対象外の読みでも、Zenz 補正の新規推論および採用・却下 feedback の記録は継続します。ただし、**保存済み feedback に基づく通常候補の順位調整・補正の即時再利用・自動ブロック**には利用しません。読みの長さにかかわらず、ユーザーが明示した **手動ブロック（hard reject）は有効**です。記録そのものは削除されず、制限を OFF にするか最小文字数を下げると、保存済みの履歴が再び自動適用の判定対象になります。
+
+これは「Zenz 補正を開始する最小文字数」とは別の設定です。新規推論の開始条件、通常の Mozc 変換・ユーザー履歴学習、確定済み Zenz 結果から Mozc 履歴へ学習する別経路を、この feedback 再利用制限だけで停止するものではありません。
 
 シークレットモード中は例外で、Zenz 推論は通常どおり利用できますが、Zenz feedback personalization の読み取り・書き込みを停止します。保存済み feedback による candidate ranking、複数文節 live correction の fast path、auto-block を含む feedback decision は適用せず、新しい feedback record も保存しません。シークレットモードを解除すると、削除せず保持していた既存 feedback を再び利用します。
 
-明示的確定後は、その accepted に対する短い rollback window を session 内に保持します。次の実テキスト入力や確定後の context transition で window が閉じる前に Backspace、Escape、Revert、Undo、Ctrl+Z などの修正操作が入った場合は、保存済み accepted を削除・上書きする代わりに `accepted_rollback` を append し、直前の accepted 1 件を補償します。`accepted_rollback` は rejected feedback ではないため、通常却下回数や auto-block の negative evidence を増やしません。IMEOff / MakeSureIMEOff は取り消しではなく確定後のモード変更として扱い、accepted を保持したまま rollback window を閉じます。表示中の Zenz 補正から Space や候補移動などの通常変換操作へ移った場合は別で、その Zenz 結果を rejected feedback として扱います。ただし Space などの通常操作由来の rejected feedback は、候補を永久に抑止する hard reject ではなく、以後の candidate ranking で順位を下げるための negative signal として扱います。
+明示的確定後は、その accepted に対する短い rollback window を session 内に保持します。次の実テキスト入力や確定後の context transition で window が閉じる前に Backspace、Escape、Revert、Undo、Ctrl+Z などの修正操作が入った場合は、**実際に追記に成功した accepted だけ** `accepted_rollback` で補償します。採用記録の追記が失敗したときは補償レコードも追記しないため、以前の正常な採用履歴を誤って減算しません。`accepted_rollback` は rejected feedback ではないため、通常却下回数や auto-block の negative evidence を増やしません。IMEOff / MakeSureIMEOff は取り消しではなく確定後のモード変更として扱い、accepted を保持したまま rollback window を閉じます。表示中の Zenz 補正から Space や候補移動などの通常変換操作へ移った場合は別で、その Zenz 結果を rejected feedback として扱います。ただし Space などの通常操作由来の rejected feedback は、候補を永久に抑止する hard reject ではなく、以後の candidate ranking で順位を下げるための negative signal として扱います。
 
 Zenz feedback の自動ブロックは、通常却下回数だけではなく拒否割合も使って判定します。同じ full-sequence feedback entry について、`通常却下回数 >= 最低拒否回数` かつ `通常却下回数 / (採用回数 + 通常却下回数) >= 最低拒否割合` の両方を満たした場合にだけブロックします。既定値は最低拒否回数 1 回、最低拒否割合 50% で、境界値も含むため `accepted=1 / rejected=1` の 50% はブロック対象です。明示的な hard reject はこの割合計算とは別の絶対ブロックとして扱います。
 
 通常の自動ブロック中は、Zenz の内部生成自体を止めず、結果だけをユーザーには表示しない shadow observation を続けます。その状態で同じ読みが最終確定され、非表示の Zenz 結果と確定値が一致した場合は accepted feedback を 1 件加算します。この hidden match は Zenz feedback の回復観測であり、Mozc user history への追加学習は行いません。一致が積み重なって拒否割合がしきい値を下回れば、たとえば `accepted=2 / rejected=1` の 33% のように自動ブロックは解除されます。同じ読みで異なる値が確定した場合は通常却下を加算し、入力継続などで最終的な読みが shadow observation の読みと異なる場合は feedback を更新しません。明示的な hard reject は shadow observation を行わず、自動回復しません。
 
-Zenz feedback TSV は、完全な読み key、完全な補正 value、粗い非可逆 context class からなる full-sequence 単位に限定します。segment-local や lexical-unit の feedback は保存しません。accepted Zenz 補正は条件を満たす場合、明示的確定の同じ commit 点で Mozc user history へ外部変換結果として即時学習されますが、それは Zenz feedback store の追加 record ではなく、別の Mozc-history 経路です。この generalized learning では in-process の rollback handle を保持し、rollback window 内の Backspace、Escape、Revert、Undo などでは直前の学習を revert します。次の実テキスト入力や ResetContext / IMEOff などで window が閉じた後は学習を保持します。exact TSV の `accepted` / `accepted_rollback` と generalized Mozc-history の revert は別々の仕組みです。また、この rollback は process 内の短い取り消し窓を対象とするもので、crash や process termination をまたぐ durable transaction / ACID rollback ではありません。局所学習では、まず直前の通常 Mozc ライブ変換で既知の文節境界を優先し、ユーザー履歴を参照しない固定境界再評価で accepted surface を正確に再現できるか確認します。その境界で説明できない範囲だけ Mozc native の再文節化と forward verification を行い、accepted surface を説明する境界・読みの経路が一意に検証できる場合だけ、その推定境界を局所学習に使います。複数の境界解釈が成立する範囲や安全に解決できない aggregate は、推定境界を学習せず非学習の barrier として扱います。その前後に独立して安全な lexical island があれば、そこは別々に学習できます。句読点などの非学習単位も lexical island の区切りとして扱い、その区切りをまたぐ境界履歴は作りません。Zenz が実際に変更したことを最終的な key/value 対応で確認できる語彙単位だけを強い選択履歴として扱います。安全な structured / local commit が1件でも成立した場合は、同じ accepted result を全文単位で重ねて Mozc history に学習しません。一方、安全な projected / local evidence を1件も commit できなかった場合は、曖昧な局所境界を捏造せず、別経路として exact accepted result の full-sequence Mozc-history fallback を試みます。Zenz feedback store 側の full-sequence accepted record はこの局所境界判定とは別に保持されます。privacy / password gate に該当する入力は、この Mozc-history 学習自体の対象外です。
+Zenz feedback TSV は、完全な読み key、完全な補正 value、粗い非可逆 context class からなる full-sequence 単位に限定します。segment-local や lexical-unit の feedback は保存しません。accepted Zenz 補正は **C が ON** でプライバシー保護や通常履歴設定の条件を満たす場合、明示的確定の同じ commit 点で Mozc user history へ外部変換結果として即時学習されます。これは **A の ON/OFF とは独立した** Mozc-history 経路であり、Zenz feedback store の追加 record ではありません。この generalized learning では in-process の rollback handle を保持し、rollback window 内の Backspace、Escape、Revert、Undo などでは直前の学習を revert します。次の実テキスト入力や ResetContext / IMEOff などで window が閉じた後は学習を保持します。exact TSV の `accepted` / `accepted_rollback` と generalized Mozc-history の revert は別々の仕組みです。また、この rollback は process 内の短い取り消し窓を対象とするもので、crash や process termination をまたぐ durable transaction / ACID rollback ではありません。局所学習では、まず直前の通常 Mozc ライブ変換で既知の文節境界を優先し、ユーザー履歴を参照しない固定境界再評価で accepted surface を正確に再現できるか確認します。その境界で説明できない範囲だけ Mozc native の再文節化と forward verification を行い、accepted surface を説明する境界・読みの経路が一意に検証できる場合だけ、その推定境界を局所学習に使います。複数の境界解釈が成立する範囲や安全に解決できない aggregate は、推定境界を学習せず非学習の barrier として扱います。その前後に独立して安全な lexical island があれば、そこは別々に学習できます。句読点などの非学習単位も lexical island の区切りとして扱い、その区切りをまたぐ境界履歴は作りません。Zenz が実際に変更したことを最終的な key/value 対応で確認できる語彙単位だけを強い選択履歴として扱います。安全な structured / local commit が1件でも成立した場合は、同じ accepted result を全文単位で重ねて Mozc history に学習しません。一方、安全な projected / local evidence を1件も commit できなかった場合は、曖昧な局所境界を捏造せず、別経路として exact accepted result の full-sequence Mozc-history fallback を試みます。Zenz feedback store 側の full-sequence accepted record はこの局所境界判定とは別に保持されます。privacy / password gate に該当する入力は、この Mozc-history 学習自体の対象外です。
 
 特に Space は、Zenz 補正を単にキャンセルしてライブ変換中の入力列へ戻すキーではなく、通常変換候補へ戻る候補変更操作として扱います。deferred 表示でまだ Zenz の応答待ちの場合は、最初の Space でその時点の Mozc 通常変換結果を表示しますが、候補は次へ進めません。すでに Zenz 補正が表示されている場合も、Space を押すと補正前の Mozc 変換結果を通常変換状態として表示し、候補ウィンドウはまだ開きません。そのまま次の文字を入力した場合は、戻した Mozc 変換結果を確定してから新しい入力を開始します。さらに Space を押した場合は、従来どおり通常変換の候補ウィンドウを開いて次候補へ進みます。
 
@@ -329,7 +373,7 @@ Zenz feedback の再利用方法は、単文節と複数文節で異なります
 
 `sensitive_like` context で得られた feedback は、通常文脈への候補 ranking / reuse には使いません。
 
-Zenz 学習データは設定画面から管理できます。管理画面では、学習済みエントリを読み取り専用 table で表示し、検索、インポート、エクスポート、選択項目削除、全削除を行えます。ユーザーが TSV ファイルを直接編集する必要はありません。
+フィードバック学習データは設定画面から管理できます。管理画面では、学習済みエントリを読み取り専用 table で表示し、検索、インポート、エクスポート、選択項目削除、全削除を行えます。ここで削除しても、C によって Mozc の通常変換履歴へすでに反映された学習は消えません。ユーザーが TSV ファイルを直接編集する必要はありません。短い読みの履歴も残り、管理画面の「feedback適用」列には「対象外（記録のみ）」、明示的な手動ブロックでは「手動ブロック有効」と表示されます。
 
 また、選択した補正を「この補正をブロック」から明示的にブロックできます。ブロック済みの補正は再ブロックできません。ブロックを解除したい場合は、該当エントリを削除してから必要に応じて再学習します。
 
@@ -432,6 +476,20 @@ Zenz ライブ補正では、Zenzai v3/v3.2 の特殊トークン形式に沿っ
 
 これにより、変換確定直後の修正操作がユーザーの意図に近い形で履歴学習へ反映されます。
 
+### サジェスト確定時の全文読み・文節単位の学習
+
+入力途中の短い読みから、より長い文章のサジェストを**明示的に選んで確定した場合**、Mozkey は候補が保持する全文の読みを確認し、通常変換で得られる候補と文節構造を使って、ユーザーセグメント履歴に表記選好を反映できるようにしています。
+
+たとえば `わたし` の入力中に、全文の読みが `わたしのなまえ` である `私の名前` がサジェストとして表示され、それを選んで確定した場合、読みと表記の対応を検証できた文節について、その後の通常変換へ選択履歴を反映します。入力した短い接頭部分だけを、全文の読みと取り違えて学習することは避けます。
+
+学習用の検証では、候補の元データに文節境界があればそれを参照し、境界がなければ通常変換や安全な逆読み解析から対応関係を探します。**実際の通常変換で候補がどう並ぶか**を基準に、先頭候補ではない表記を明示的に選択した場合の強い学習を判断します。辞書の内部的な候補順だけを表示順位として扱いません。候補・読み・文節境界・順位の対応を十分に検証できない場合は、推測に基づく文節単位の追加学習を見送ります。
+
+この検証は元の確定結果を差し替えず、通常のサジェスト履歴や、他の確定時処理を重複して実行しません。Undo で直前の学習が取り消された後に同じ読みを再確定した場合には、保留中の古い取り消し処理を**新しい学習および候補順位の検証より前**に適用し、新しく確定した選好が誤って消されることを防ぎます。
+
+通常の履歴学習が無効な場合や、シークレットモード、パスワード欄、private input などの学習禁止条件では、この追加学習を行いません。対象は対応する通常のデスクトップサジェスト確定であり、モバイル向け mixed conversion や zero-query suggestion へ無条件に拡張するものではありません。**Zenz 補正フィードバックの保存・再利用とは別の Mozc サジェスト学習経路**です。
+
+この追加学習経路は Windows でビルド・回帰テスト・実機確認を行っています。macOS での本変更の実機動作は未検証です。
+
 ### 複数コマンドのキー割り当て
 
 キー設定エディタで、1つのキー入力に対して複数のコマンドを順序付きで割り当てられるようにしました。
@@ -445,6 +503,58 @@ Zenz ライブ補正では、Zenzai v3/v3.2 の特殊トークン形式に沿っ
 コマンド列は左から右へ順に実行されます。途中で入力状態が変わった場合、後続コマンドはその時点の状態に合わせて解決されます。たとえば `Convert → ConvertNext` では、まず未変換状態から変換状態へ入り、その後に次候補へ移動します。
 
 設定ファイル上では、複数コマンドは `Commit|IMEOff` や `Convert|ConvertNext` のように `|` 区切りで保存されます。設定画面では `Commit → IMEOff` のように表示され、コマンドの追加、削除、並べ替えができます。
+
+### 手動 Zenz 補正と遅延コマンド列
+
+キー設定エディタでは、従来の手動 Zenz 補正 `ForceZenzLiveCorrection`（「Zenz補正を未確定文字に対し実行」）、フィードバック無視の手動補正 `ForceZenzLiveCorrectionWithoutFeedback`（「Zenz補正を未確定文字に対し実行（フィードバック学習を無視）」）、およびコマンド列の途中で待機する `Delay(ms)`（「遅延」）を利用できます。
+
+- **通常の手動 Zenz 補正**: 入力中（Composition）または変換中（Conversion）の未確定文字列に対して、現在の Mozc 変換結果を基準に Zenz 補正を非同期で要求します。保存済み Zenz feedback の利用設定は通常どおり適用されます。
+- **フィードバック無視の手動補正**: この実行に限り、保存済み Zenz feedback による通常候補の順位調整・補正結果の高速再利用・統計的な自動ブロックを無視します。変換中から実行した場合は、フィードバック抜きの Mozc 変換結果を再計算して基準にします。通常の Mozc 学習履歴とユーザー辞書は利用でき、ユーザーが明示的に指定した手動ブロック（hard reject）は引き続き有効です。「無視」は**過去の feedback の参照**についてであり、補正結果を確定した場合の新しい feedback 記録（A）や Mozc 履歴への学習（C）は、それぞれの設定に従って行われます。
+- **両コマンド共通**: 自動の「Zenz ライブ補正を有効にする」が OFF でも実行でき、手動実行には自動補正開始用の最小読み文字数を適用しません。パスワード欄やプライバシー・入力内容の適格性検査は維持し、Zenz の出力が必ず採用されるわけではありません。変換中のフィードバック無視補正で再変換が失敗した場合、元の候補・入力モード・学習取り消し情報を維持します。
+- **遅延**: `Delay(700)` は後続コマンドを 700 ms 後に再開する指定です。設定できる値は 0～5000 ms で、`Delay(0)` は待機しません。これは自動ライブ変換や自動 Zenz 補正の遅延設定とは独立した、キー割り当て専用の待機です。
+
+実用的なキー割り当て例（**カスタム設定例**であり、標準の既定割り当てではありません）:
+
+```text
+Precomposition + Space -> ReconvertSelectionOrInsertSpace|Delay(700)|ForceZenzLiveCorrection
+Composition + Shift Space -> ForceZenzLiveCorrection
+Conversion + Shift Space -> ForceZenzLiveCorrection
+Composition + Ctrl Shift Space -> ForceZenzLiveCorrectionWithoutFeedback
+Conversion + Ctrl Shift Space -> ForceZenzLiveCorrectionWithoutFeedback
+```
+
+1行目は **Windows TSF 向け**です。「入力文字なし」の Space を、選択テキストがある場合だけ再変換 → 700 ms 待機 → 手動 Zenz 補正とし、選択されていなければ従来どおり空白を入力します。アプリケーション側の再変換対応が必要です。2・3行目は Shift+Space で通常の手動補正、4・5行目は Ctrl+Shift+Space でフィードバック無視の手動補正を実行する例です。入力中と変換中では別々のキー設定行を作成します。
+
+**制約と操作上の注意**:
+
+- `Delay` はコマンド列の先頭には置けません。設定画面では待機時間を入力して追加し、コマンド列の `Delay` をダブルクリックすると再編集できます。通常コマンドのダブルクリックは従来どおり削除操作です。
+- `ForceZenzLiveCorrection` と `ForceZenzLiveCorrectionWithoutFeedback` は、どちらもコマンド列の**最後**にのみ配置できます。たとえば `ForceZenzLiveCorrectionWithoutFeedback|Delay(700)|Commit` は設定できません。Zenz の非同期応答処理を後続コマンドで上書きしないための制約です。
+- Space / Shift+Space に別のコマンドが既に割り当てられている場合は、同じ入力状態の既存行を**置き換えて**ください（重複行を追加しない）。特に Shift+Space は従来の別種の空白入力などを置き換える可能性があり、他のアプリケーションや OS のショートカットに先取りされる場合もあります。
+- 待機中に別のキー操作、候補のマウス選択、入力先の切り替えなどが行われた場合、古いコマンド列が後から入力へ作用しないよう、保留していた再開処理を無効化します。
+- 手動補正後も Space で通常の Mozc 変換へ戻れます。再度手動補正を実行するには、変換中に割り当てたキーを使用します。「Zenz補正中」専用キー設定が追加されており、Zenz補正結果が表示中はその設定が優先されます。
+
+※ 選択文字列の再変換（`ReconvertSelectionOrInsertSpace`）は Windows 専用です。手動 Zenz 補正と遅延コマンド列の組み合わせについては、macOS・Linux での動作を保証していません。
+
+### ライブ変換・Zenz補正中のキー設定
+
+キー設定には「ライブ変換中」（`LiveConversion`）と「Zenz補正中」（`ZenzConversion`）があります。前者は Mozc のライブ変換中、後者は Zenz の補正結果が表示されている間に適用されます。
+
+標準キー設定での Backspace の動作は次のとおりです。
+
+| 入力状態 | Backspace の動作 |
+| --- | --- |
+| 通常の変換中 | 変換をキャンセルして読みへ戻る |
+| ライブ変換中 | 左の読みを1文字削除して再変換する |
+| ライブ変換から移行した Zenz補正中 | 左の読みを1文字削除して再変換する |
+| 通常変換から手動で移行した Zenz補正中 | 補正をキャンセルして読みへ戻る |
+
+Zenz補正中は、標準キー設定の Space で補正結果を確定せずに元の Mozc 変換結果へ戻せます。ライブ変換から移行した場合は、戻った後も読みを編集するとライブ変換が続きます。通常変換から手動で補正した場合は、通常変換に戻ります。
+
+```text
+ZenzConversion + Space -> RevertZenzToMozc
+```
+
+「通常のMozc変換に戻す」（`RevertZenzToMozc`）は、キー設定エディタで別のキーにも割り当てられます。このコマンドは単独で指定してください。カスタムキー設定で明示的に割り当てた操作がある場合は、その設定が優先されます。
 
 ### 候補の履歴削除・非表示
 
@@ -480,11 +590,9 @@ Windows 版の MS-IME 風キー設定では、確定済みテキストを範囲�
 
 ### 左右 Shift / Ctrl の個別キー割り当て（Windows）
 
-Windows 版では、キー設定エディタ上で左 Shift / 右 Shift / 左 Ctrl / 右 Ctrl を別々のキーとして扱えます。
+Windows 版では、左 Shift / 右 Shift / 左 Ctrl / 右 Ctrl にそれぞれ IME の操作を割り当てられます。たとえば右 Shift で IME を有効化し、左 Shift で無効化することもできます。
 
-`Ctrl j` のような従来の汎用 Ctrl キーバインドは、左 Ctrl / 右 Ctrl のどちらでも従来どおり動作します。
-
-たとえば
+設定例:
 
 - `DirectInput + RightShift -> IMEOn`
 - `Precomposition + LeftShift -> IMEOff`
@@ -493,11 +601,27 @@ Windows 版では、キー設定エディタ上で左 Shift / 右 Shift / 左 Ct
 - `DirectInput + RightCtrl -> IMEOn`
 - `Precomposition + LeftCtrl -> IMEOff`
 
-のように設定でき、左右の Shift / Ctrl に別々の IME 操作を割り当てられます。
+キー設定エディタでは、Ctrl と Shift の左右条件を**それぞれ独立して**指定できます。キーを入力した後、該当する修飾キーについて「左右どちらでも」「左のみ」「右のみ」を選択します。Ctrl / Shift が割り当てに含まれない場合、その修飾キーの選択欄は無効になります。
 
-`IMEOn` または `IMEOff` に明示的に割り当てたキーを押した場合は、すでにその状態であっても IME モードインジケータを表示します。たとえば、IME がすでに無効の状態で `IMEOff` キーを押しても、直接入力状態のインジケータを表示します。
+「左右どちらでも」は従来の汎用 `Ctrl` / `Shift` と同じ意味です。`Ctrl j` のような既存のキー設定は、左 Ctrl / 右 Ctrl のどちらでも動作します。キー入力を取り込んだ直後は、検出できた左右の物理キー指定を初期値として使用します。
+
+従来の汎用割り当てを残したまま、左右を限定した割り当ても作成できます。ただし、**同じ入力状態で同じ物理キー操作に一致し得る割り当てを、異なるコマンドに設定すると保存時に競合として拒否されます。** たとえば、同じ入力状態の `Ctrl Delete` と `LeftCtrl Delete` に別々のコマンドを割り当てることはできません。
+
+CapsLock が有効な場合も、左右指定の照合と汎用ショートカットへのフォールバックを行います。Windows 専用の `VK_IME_ON` / `VK_IME_OFF` は、CapsLock のトグル状態だけを理由に修飾キー付き操作として扱われません。
+
+左右両方を同時に押す特殊な操作、特に修飾キー単独の組み合わせにおける TSF のキー解放タイミングは、すべての挙動を保証するものではありません。また、外部から取り込んだ「左右両方を同時に要求する」設定は、3択の選択欄では表現できないため、元の設定を保持したままその欄の編集を無効にします。
+
+`IMEOn` または `IMEOff` に明示的に割り当てたキーを押した場合は、すでに同じ状態であっても IME モードインジケータを表示します。たとえば、IME がすでに無効の状態で `IMEOff` キーを押しても、直接入力状態のインジケータを表示します。
 
 これにより、IME 有効化・無効化キーを「状態を切り替えるキー」としてだけでなく、現在状態を視覚的に確認するためのキーとしても使えます。
+
+### 一時英数字入力から IME ON でひらがなへ復帰（Windows）
+
+Shift などによって半角英数字の**一時入力モード**に切り替わっている場合、`IMEOn` に割り当てられたキーを押すと、既存の未確定文字列を確定せずに入力モードだけをひらがなへ変更します。タスクバーの入力モード表示も「あ」に更新されます。
+
+たとえば、Shift による一時英数字切り替えが有効な設定で `Shift+G` → `o` → `o` → `IMEOn` → `a` と入力すると、`Gooあ` を同じ未確定文字列のまま入力できます。カタカナ入力から一時的に英数字へ切り替えた場合も、`IMEOn` の復帰先はひらがなです。
+
+対象は、現在の入力モードが半角英数字で、復帰先として異なる入力モードが保持されている場合です。通常のひらがな入力中や、復帰先も半角英数字である明示的な半角英数字入力中は、従来どおり `IMEOn` で入力モードを変更しません。`IMEOff` による直接入力への切り替えも従来どおりです。
 
 ### Windows 既定 IME 設定
 
@@ -516,8 +640,11 @@ Windows 版では、設定画面から Mozkey の IME アイコンを切り替�
 選択肢は以下です。
 
 - 既定
+- モノクロ（ライト・ダーク対応）
 - モノクロ（黒）
 - モノクロ（白）
+
+「モノクロ（ライト・ダーク対応）」は、既存の黒モノクロアイコンの形状を維持しつつ、透明背景側に細い白の逆色エッジを加えた静的アイコンです。ライト / ダークのどちらでも視認しやすくするためのもので、Windows のシステムテーマに応じてアイコン自体を切り替える機能ではありません。
 
 この設定は、Windows の TSF language profile に登録されている Mozkey の `IconFile` / `IconIndex` を更新し、タスクバーや IME 一覧に表示される IME アイコンへ反映します。
 
@@ -558,6 +685,14 @@ Windows 版のルビ表示では、左右の余白、上下の余白、入力文
 Windows 版の IME 切り替えインジケータは、設定画面から「システムテーマに合わせる / ダーク / ライト / カスタム」を選択できます。「システムテーマに合わせる」では Windows のライト / ダークテーマに追従し、「ダーク」「ライト」を明示した場合は Windows のテーマ変更に追従せず、その配色を維持します。「カスタム」では英数字・ひらがな・カタカナの背景色・枠線色・文字色・影色に加え、幅・高さ・角丸・文字サイズ・枠線幅・影のぼかし・濃さ・位置を調整できます。
 
 入力位置がモニターの作業領域端付近にある場合は、インジケータが画面外にはみ出さないよう表示位置を自動調整します。外観設定の「リセット」はテーマとカスタム値を既定値へ戻しますが、インジケータの表示 ON/OFF 設定は変更しません。
+
+### Windows TSF プライベート入力（`IS_PRIVATE`）
+
+Windows 版では、TSF input scope に `IS_PRIVATE` が含まれる入力を、Mozkey のシークレットモードとは別の private-input 状態として扱います。Chrome Incognito、Edge InPrivate、Firefox Private Browser など、この scope を通知する環境では、既存の Mozc 学習履歴や Zenz feedback を候補生成・ranking に利用でき、Zenz のローカル推論も継続しますが、その private input を起点とする新しい永続学習は保存しません。
+
+具体的には、通常の `DEFAULT_HISTORY` はその request だけ `READ_ONLY` 相当として扱い、既存履歴の読み取りを維持したまま Mozc history / サジェスト履歴への新規書き込みを止めます。Zenz feedback も保存済みデータの読み取りは維持しますが、新しい feedback の保存と、accepted Zenz 結果から Mozc history への追加学習は行いません。もともと `READ_ONLY` / `NO_HISTORY` に設定されている場合は、その設定を上書きしません。
+
+private input 中は、Windows のタスクバーに表示される入力モードアイコンと IME 切り替えインジケータに小さな盾を重ねて表示します。この盾は TSF `IS_PRIVATE` の状態を示すもので、Mozkey のシークレットモードだけでは表示しません。タスクバー側の通常入力モード文字、private の盾、IME 無効時の `×` は Windows のシステムテーマに合わせて黒 / 白を切り替え、テーマ変更にも追従します。IME 無効状態では `×` 表示を優先します。
 
 ### 縦書き対応（Windows / macOS）
 
@@ -608,13 +743,13 @@ Windows 版では、ローマ字入力時に「未確定のローマ字を薄く
 
 この表示は Windows TSF の専用 display attribute として適用します。Firefox などの Gecko 系ホストでは、編集面の背景を安全に取得できた場合だけ、その背景に合わせた薄い文字色を使用します。選択範囲、clipped な geometry、非均一な背景など信頼できない状態は背景色として固定せず、互換表示へフォールバックします。また、この機能が OFF のときは背景取得のための画面 sampling を行いません。
 
-あわせて、Windows 版では設定画面から入力中の文字、変換中の文節、Zenz ライブ補正について、それぞれ以下の表示色を個別に設定できます。
+あわせて、Windows 版では設定画面から「入力中の文字」「変換中の文節」「Zenz 補正中の文字」について、それぞれ以下の表示色を個別に設定できます。
 
 - 文字色
 - 背景色
 - 下線色
 
-新規・未設定のプロファイルでは、入力中の下線色は `#30DCC8`、変換中の文節の下線色は `#C1A5AB` が既定です。Zenz ライブ補正では専用の下線色が既定で有効になり、既定色は `#C4DC6C` です。Zenz 専用の文字色・背景色は既定では無効で、無効な色チャネルは変換中の文節側のカスタム色が有効ならそれを引き継ぎ、そうでなければ Windows TSF の既存表示へフォールバックします。すでに各色やその有効 / 無効を明示的に保存している場合は、その既存設定を維持します。
+新規・未設定のプロファイルでは、入力中の下線色は `#30DCC8`、変換中の文節の下線色は `#C1A5AB` が既定です。「Zenz 補正中の文字」では専用の下線色が既定で有効になり、既定色は `#C4DC6C` です。Zenz 専用の文字色・背景色は既定では無効で、無効な色チャネルは変換中の文節側のカスタム色が有効ならそれを引き継ぎ、そうでなければ Windows TSF の既存表示へフォールバックします。すでに各色やその有効 / 無効を明示的に保存している場合は、その既存設定を維持します。
 
 日本語入力中・変換中の未確定文字を見やすくするための機能です。特に、視認性を高めたいユーザー向けのアクセシビリティ改善として追加しています。
 
@@ -690,6 +825,10 @@ bazelisk build \
 `--define=macos_zenz_runtime=1` を付けない generic package build は、
 Zenz runtime を含む配布用 macOS PKG としては扱いません。
 
+**インストール可否は Zenz 同梱の有無とは別の制御です。** 上記コマンドは、誤インストールを防ぐため、ビルドは可能でもインストール禁止の guarded PKG を生成します。実機インストール用のPKGを明示的に生成する場合に限り、監査後、上記 `bazelisk build` に `--define=MOZKEY_INSTALLABLE=1` を追加してください。この指定は `--config=oss_macos` と併用し、生成PKGから実際の preinstall と receipt バージョンを確認する必要があります。判定条件と27ケースの回帰テストは [macOSインストーラー検証手順](src/mac/MOZKEY_MACOS_INSTALL_TESTING.md) を参照してください。
+
+macOS 0.7.7（内部インストールバージョン `100.7.7`）の実機検証では、正規アンインストール後にreceiptだけが残った状態から、`pkgutil --forget` なしで再インストールできました。ただし、GUIインストール直後に「Hiragana (Mozkey)」が入力ソースへ表示されない場合、ログアウト・再ログインで反映されることを確認しています。検証に使用した開発用PKGはパッケージレベルでは未署名・未公証であり、一般向けのmacOS配布物としてはまだ公開していません。
+
 正式な architecture/runtime gate では、最終 `.pkg` を Apple Silicon で検証し、
 同一 SHA-256 の package artifact を native Intel runner に渡して、
 同じ package-level verifier で `mozc_zenz_scorer -> llama-server -> model`
@@ -716,6 +855,18 @@ This repository is my personal fork of [google/mozc](https://github.com/google/m
 This fork is mainly maintained for my own Windows / macOS environments and adds input assistance, live conversion, context-aware conversion, local Zenz correction, system-theme-aware renderer appearance, and offline-distribution-oriented adjustments to Mozc.
 
 This build is not an official google/mozc distribution.
+
+macOS initial setup (development PKGs)
+--------------------------------------
+
+Prebuilt macOS PKGs are not currently published in Releases. The following steps apply after installing an audited, explicitly installable development PKG; ordinary guarded OSS PKGs intentionally refuse installation. See [Building a Zenz-enabled Universal macOS PKG](#building-a-zenz-enabled-universal-macos-pkg) for build and installation-gate details.
+
+1. Log out of macOS and log back in after installation.
+2. Open **System Settings → Keyboard → Text Input → Edit**.
+3. If **Hiragana (Mozkey)** is already in the input-source list, do not add it again. Otherwise, click **+**, select **Japanese**, and look for the Mozkey Hiragana input source to add. The name may be localized.
+4. Select the Mozkey Hiragana input source from the menu-bar input menu.
+
+On the tested macOS 0.7.7 installation, Hiragana (Mozkey) became selectable after logging out and back in, despite not appearing immediately after the GUI install. The cause of the delay is not yet established, and behavior may vary between systems. See the [Apple input-source settings guide](https://support.apple.com/ja-jp/guide/mac-help/mchl84525d76/27/mac/27) for the settings path.
 
 Privacy / Network Access
 ------------------------
@@ -748,7 +899,7 @@ The Zenz localhost transport is hardened so that it does not rely on a fixed
 endpoint, and internal requests include protection against accidental or stale
 local endpoint mismatches.
 
-Zenz feedback learning stores only full-sequence local learning records such as
+Zenz feedback recording (A) stores only full-sequence local learning records such as
 the complete reading, the complete candidate, coarse context class,
 accepted/rejected counts, and reason markers. Raw left context is not stored.
 Context used for feedback is reduced to a non-reversible class such as `empty`,
@@ -762,6 +913,17 @@ candidate ranking, session-level fast-path reuse, or feedback decisions, and
 no new `accepted`, `rejected`, or `accepted_rollback` feedback is persisted.
 Existing feedback is left intact and becomes available again after leaving
 Incognito mode.
+
+On Windows, TSF `IS_PRIVATE` is treated as a privacy signal distinct from
+Mozkey Secret / Incognito mode. In environments such as Chrome Incognito,
+Edge InPrivate, and Firefox Private Browser that include `IS_PRIVATE` in the
+input scope, stored Mozc learning history (conversion and suggestion) and
+Zenz feedback remain readable, and local Zenz inference remains available.
+New persistent writes originating from that private input are suppressed for
+Mozc history, suggestion history, Zenz feedback, and Zenz-to-Mozc-history
+learning. Existing learning data is not deleted. `IS_PRIVATE` is also kept
+separate from password input scopes, whose existing protections remain in
+place.
 
 Additional release checks verify that Mozc core runtime binaries do not contain
 hard-deny telemetry, updater, crash-upload, or usage-statistics markers.
@@ -835,19 +997,24 @@ Main features added in this fork
 - Allows enabling/disabling live conversion and configuring its debounce delay and minimum start length from the config dialog
 - Applies live conversion after a short debounce delay to avoid noisy intermediate conversions
 - Reduces candidate-window flicker caused by repeatedly recomputing passive suggestions for transient unresolved Roman prefixes after an already resolved reading; Mozkey holds the currently displayed suggestion list until the suffix resolves, then resumes refresh, and entering the list keeps the exact displayed candidates
+- For explicitly accepted suggestions, verifies the complete reading, native segment mapping, and actual normal-conversion candidate order before learning segment-level preferences; preserves the original committed text and suggestion history, and skips speculative learning when the mapping or displayed ranking cannot be verified
 - By default, suppresses live conversion for one-character compositions to avoid over-converting particles
 - Suppresses live conversion for very short kana compositions with decorative trailing symbols such as `え~`, `えー`, or `ん？`
 - Reinforces expressive kana forms such as `うっそ`, `くっそ`, `やっば`, `すっげぇ`, `めっちゃ`, `ちっす`, `ちょりっす`, `ほえ～`, `ほぇ～`, and `ほっほーん` with natural-kana generated dictionary candidates
 - Uses committed left context, previous segments, and limited right context to reduce unnatural homophone results in cases such as `mainにマージしました`, `githubには`, `彼になった`, `彼なのか`, `2名しかいない`, `追記したい`, `山梨県立美術館`, and `滋賀方面`
 - Allows assigning multiple commands to a single key binding as an ordered command sequence
+- Adds `ForceZenzLiveCorrection` to explicitly request Zenz correction for uncommitted text, including when automatic Zenz live correction is disabled
+- Adds `ForceZenzLiveCorrectionWithoutFeedback` to request a one-shot correction without automatically reusing stored Zenz feedback, while retaining normal Mozc history, user-dictionary entries, explicit manual blocks, and settings-controlled learning of newly committed results
+- Adds `Delay(700)`-style waiting steps (0–5000 ms) in keymap command sequences, including after selected-text reconversion
 - Adds a candidate history-delete / hide action for conversion and prediction candidates. The standard keymaps use `Ctrl+Delete`: history-backed candidates are removed from learned history first, while candidates that still remain can be stored as suppression words in the `非表示候補` user dictionary. The original user-dictionary entry is not deleted, and removing the corresponding suppression entry restores the candidate. The candidate footer shows history-delete or hide guidance for the currently selected candidate using the active key binding
 - Prevents candidates that Mozc can semantically identify as emoticons—built-in emoticon candidates and user-dictionary entries registered with the `顔文字` POS—from being promoted to the first candidate in ordinary conversion through learning. The candidates remain visible, while the same surface registered under a non-emoticon POS remains eligible for normal ranking and learning. Independently generated Zenz surfaces are not classified as emoticons from string shape alone
 - Stores command sequences as `Commit|IMEOff` and shows them in the keymap editor as `Commit → IMEOff`
 - In the MS-IME style keymap, pressing Space while committed text is selected reconverts that selection; with no selection, Space still inserts a normal space
-- Allows assigning left/right Shift and left/right Ctrl separately on Windows
+- On Windows, allows independently selecting Either side / Left only / Right only for Ctrl and Shift in the keybinding editor; generic Ctrl/Shift shortcuts remain supported, while conflicting bindings for different commands are rejected when saving
 - Shows the IME mode indicator even when a key assigned to IMEOn or IMEOff is pressed while Mozc is already in that state
+- On Windows, pressing `IMEOn` during temporary half-width ASCII input restores hiragana input without committing the existing preedit
 - Adds explicit Windows default IME controls to the config dialog, with restore support for the previous default IME setting
-- Allows choosing the Windows Mozkey IME profile icon from Default, Monochrome (Black), and Monochrome (White) in the config dialog
+- Allows choosing the Windows Mozkey IME profile icon from Default, Monochrome (Light/Dark), Monochrome (Black), and Monochrome (White) in the config dialog
 - Supports candidate, suggestion, and live-conversion ruby rendering in immersive TSF hosts such as Windows Search through an in-process renderer path, keeping the UI above the host presentation layer and preserving correct mouse selection; an unfocused passive suggestion does not enter normal conversion on mouse-down, and mouse-up commits the suggestion that was actually clicked
 - Allows configuring light/dark/auto (follow system theme)/custom color themes, size, corner radius, opacity, and shadow separately for the candidate window, suggestion window, and live-conversion ruby display on Windows and macOS; new configurations default all three theme selectors to Auto
 - Makes the Windows ruby display use target-monitor DPI-aware positioning and scaling, and allows configuring its horizontal padding, vertical padding, and distance from the input text
@@ -857,9 +1024,10 @@ Main features added in this fork
 - Adds vertical-writing layouts for candidate, suggestion, infolist, and live-conversion ruby displays on Windows and macOS, with candidate and segment navigation aligned to the visual writing direction when the active keymap uses the supported command bindings
 - On Windows and macOS, places cascading candidate windows outward from the focused vertical candidate, with fallback to the opposite side when necessary
 - Allows enabling or disabling the ruby display shown during live conversion from the config dialog
-- Allows customizing Windows preedit text color, background color, and underline color from the config dialog for input text, converting segments, and Zenz live correction separately; the Zenz live-correction underline defaults to enabled with `#C4DC6C` for new or otherwise unset profiles
+- Allows customizing Windows preedit text color, background color, and underline color from the config dialog for input text, converting segments, and "Text being corrected by Zenz" separately; the underline for Zenz-corrected text defaults to enabled with `#C4DC6C` for new or otherwise unset profiles
 - Adds an opt-in Windows feature for Roman input that dims only the unresolved trailing romaji still forming an incomplete conversion-rule prefix; it defaults to OFF and the dimness can be adjusted from 0% to 100% (default 85%); 100% matches the background and becomes invisible
 - Allows choosing System theme, Dark, Light, or Custom for the Windows IME mode indicator, including per-mode colors and geometry/shadow customization, with automatic screen-edge repositioning
+- On Windows TSF input marked with `IS_PRIVATE`, keeps existing Mozc learning history and Zenz feedback available for reading while suppressing new persistent learning. This is separate from Mozkey Secret / Incognito mode; private input is marked with a shield in the taskbar input-mode icon and IME mode indicator, while normal/private/disabled taskbar mode glyphs follow the Windows light/dark system theme
 - Adds an enhanced system dictionary generation pipeline
 - Adds a small tracked manual override dictionary for daily vocabulary, practical vocabulary, loanwords, and secondary English spelling candidates, with regression checks that keep Japanese candidates first
 - Allows incorporating place names and SudachiDict-derived vocabulary from merge-ut-dictionaries into the system dictionary
@@ -877,28 +1045,29 @@ Main features added in this fork
 - Lets the Server request the required preceding / following lengths and lets Windows TSF / macOS IMK acquire only the requested directions and lengths; right-context acquisition is configurable and defaults to 6 characters when enabled
 - Selects preceding and following Zenz context independently and applies shared Unicode-aware script analysis and privacy filtering
 - On Windows, sends Zenz correction requests from `mozc_server` to `mozc_zenz_scorer.exe` through a named pipe and performs local inference through the localhost endpoint of `llama-server.exe`
-- Allows configuring the Zenz correction debounce delay from the config dialog. The default is 1000 ms
+- Allows configuring the Zenz correction debounce delay from the config dialog. The default is 700 ms for new or otherwise unset profiles; explicitly saved delay values are preserved
 - Allows configuring the minimum number of characters to start Zenz correction
 - Adds an opt-in `Do not show the normal live-conversion result until Zenz correction returns` mode. While waiting, Mozkey preserves the previously stable Zenz-corrected presentation when possible and appends unresolved raw-romaji suffixes to that visible presentation; if Zenz is not adopted, it falls back to the current Mozc live-conversion result
 - Adds a configurable deferred-presentation wait limit. The default is 250 ms after the Zenz correction request is submitted; when the deadline expires, that generation is discarded and Mozkey reveals the already-computed normal Mozc live-conversion result
 - Commits the presentation that is actually visible to the user, rather than a hidden Mozc baseline, when Enter or Shift-based ASCII input ends a deferred presentation; Undo after Enter restores the same visible presentation
 - Detects and rejects likely context echo where Zenz repeats a long suffix of already committed left context at the beginning of the current output, then falls back to the normal Mozc live-conversion result
-- Adds optional local feedback learning for Zenz correction results
+- Separates Zenz personalization into three independent settings: **A** records Zenz accept/reject observations to a local TSV; **B** automatically reuses existing feedback for candidate ranking, fast-path correction, and statistical auto-blocking; **C** learns explicitly committed Zenz corrections into regular Mozc conversion history. Recording can be disabled without disabling reuse or Mozc-history learning, and pre-existing legacy preferences are inherited only for new settings that have not yet been explicitly saved
+- Limits automatic reuse of stored Zenz feedback to full readings of at least 7 Unicode code points by default, to avoid over-applying learned preferences to short readings with many homophones and context-dependent interpretations. The threshold (1–20) and the gate can be configured; shorter readings are still recorded, and explicit manual hard blocks still apply
 - In Secret / Incognito mode, keeps local Zenz inference enabled while disabling Zenz feedback personalization; stored feedback is not reused or consulted for decisions, no new feedback is persisted, and existing feedback is left intact
 - Adds adaptive Zenz feedback auto-blocking. For the same full reading, context class, and correction value, auto-blocking activates only when both the minimum ordinary-reject count and the minimum reject percentage over accepted plus ordinary-rejected observations are met. For configurations without a saved value, auto-blocking defaults to enabled with a minimum of 1 rejection and 50%. Auto-blocking does not persist irreversible hard-reject rows; it is re-evaluated dynamically from the current settings and stored feedback.
 - Keeps evaluating an auto-blocked Zenz result as a hidden shadow observation. If the final committed value for the same reading matches that hidden Zenz value, accepted feedback is added so the entry can recover automatically once its reject percentage falls below the threshold. A different final value for the same reading adds an ordinary rejection; a changed final reading is neutral. Explicit hard rejects are not eligible for shadow recovery.
 - Stops reusing a Zenz feedback entry as a preferred candidate or live-correction fast path when ordinary rejected observations outnumber accepted observations for the same full reading, context class, and correction value. This is a neutral reject-count-dominant state, not a hard block, so it does not delete ordinary Mozc candidates or prevent newly produced Zenz corrections by itself.
-- Does not store Zenz feedback just because a Zenz correction was displayed. When the user explicitly commits the visible Zenz result, such as with Enter or a direct-commit punctuation/symbol, Mozkey immediately appends the accepted full-sequence feedback to the local TSV and keeps a short rollback window for that commit
-- If Backspace, Escape, Revert, Undo, Ctrl+Z, or a similar correction action occurs inside that rollback window, Mozkey appends `accepted_rollback` to compensate exactly the just-recorded acceptance. This is not rejected feedback and does not increase ordinary-reject or auto-block negative evidence. The next real text input or a post-commit context transition closes the window and keeps the acceptance; IMEOff / MakeSureIMEOff are treated as confirmation rather than cancellation
+- When feedback recording (A) is ON, does not persist a correction merely because it was displayed; only an explicit commit appends accepted full-sequence feedback. A failed append is not treated as a successful observation for Undo compensation
+- If Backspace, Escape, Revert, Undo, Ctrl+Z, or a similar correction action occurs inside the rollback window, Mozkey appends `accepted_rollback` only for an acceptance successfully written to the feedback TSV. Failed writes are not compensated, preventing accidental subtraction from earlier valid acceptance records. Mozc-history revert uses a separate handle. IMEOff / MakeSureIMEOff confirm rather than cancel the commit
 - Treats a visible Zenz correction as rejected feedback when the user moves to normal conversion operations such as Space or candidate movement. Ordinary rejected feedback from these operations is used as a negative ranking signal rather than as a hard command to suppress the candidate
 - When Space restores the underlying Mozc normal conversion from a visible Zenz correction, the next text input commits that restored conversion before starting a new composition
-- Adds a safe Zenz feedback management UI to the config dialog. Users can search, import, export, delete selected entries, and clear all entries without directly editing the TSV file
-- Allows explicitly blocking selected Zenz corrections from the feedback management UI. Already blocked corrections cannot be blocked again; to unblock one, delete the corresponding feedback entry and relearn it if needed
-- Reuses Zenz feedback for normal conversion candidate ranking. In single-segment conversions, stored feedback is scored, existing candidates receive feedback-adjusted costs, and missing feedback candidates may be inserted as synthetic candidates at a natural cost-based position. Accepted feedback raises the candidate, while ordinary rejected feedback lowers it without deleting it
+- Adds a feedback-learning data management UI to the config dialog. Users can search, import, export, delete entries, and clear the feedback TSV. Deleting this feedback does **not** delete separately learned Mozc conversion history from C
+- Allows explicitly blocking selected Zenz corrections from the feedback management UI. Manual hard rejects continue to apply even when automatic feedback reuse (B) is OFF; unblocking requires deleting the corresponding entry
+- When automatic reuse (B) is ON, ranks normal single-segment candidates using stored feedback and may insert synthetic candidates at feedback-adjusted positions. Accepted observations raise ranking; ordinary rejections lower it without deleting the candidate
 - Does not apply Zenz feedback ranking to multi-segment normal conversions, to avoid collapsing phrase boundaries
 - Reuses accepted Zenz feedback via the session-level live-correction fast path for multi-segment live conversion to preserve learned full-phrase corrections
 - Does not reuse feedback obtained from `sensitive_like` context for ordinary-context candidate ranking
-- Learns explicitly committed Zenz candidates into Mozc user history immediately at the same commit point when runtime conditions allow it, while retaining an in-process revert handle until the rollback window closes. Backspace, Escape, Revert, Undo, and similar immediate corrections revert that generalized Mozc-history learning; the next real text input or post-commit context transition keeps it
+- When Mozc-history learning (C) is ON and privacy/history conditions allow it, learns explicitly committed Zenz corrections into Mozc user history independently of feedback recording (A), retaining an in-process revert handle for immediate Undo or similar cancellation
 - For accepted Zenz corrections that can be mapped safely onto the previous normal Mozc live-conversion segments, prefers known boundaries, verifies them with a history-free fixed-boundary conversion, and uses Mozc-native resegmentation only for ranges that still need resolution before learning an external multi-segment commit. If multiple boundary interpretations remain, Mozkey does not learn local or boundary history from that inferred split; punctuation-like separators are not crossed either. Candidate structure is reused when possible, and only lexical units with verified Zenz-change evidence are marked as strong user-selected history. If no safe projected/local Mozc-history evidence can be committed at all, the separate full-sequence Mozc-history fallback may still be attempted.
 - Protects user-dictionary candidates and ASCII / mixed-script surfaces that appear in the current normal Mozc live-conversion result before adopting Zenz live-correction output
 - For ASCII / mixed-script surfaces, temporarily replaces the reading with a placeholder in the Zenz prompt when it can be identified safely, then restores the selected surface after the response, so entries such as `もずきー -> Mozkey` are not silently overwritten as `モズキー` while surrounding text can still be corrected
@@ -1021,7 +1190,8 @@ directions and lengths and attach them as `zenz_preceding_text` /
 unchanged.
 
 Zenz correction is delayed by a configurable debounce interval. The default
-delay is 1000 ms. The minimum number of characters required to start Zenz
+delay is 700 ms for new or otherwise unset profiles. Previously saved delay
+values remain unchanged. The minimum number of characters required to start Zenz
 correction can also be configured. If the current composition changes before
 the Zenz result arrives, the old result is discarded by generation/key checks.
 
@@ -1111,11 +1281,43 @@ For Windows TSF password input scopes and macOS Secure Event Input, application
 surrounding text is not acquired for Zenz and extended Zenz context acquisition
 is skipped.
 
-Zenz feedback learning is optional. When enabled, a displayed Zenz result is not
-stored just because it was shown. When the user explicitly commits the visible
-Zenz result, such as by pressing Enter or by using a direct-commit
-punctuation/symbol, Mozkey immediately appends the accepted full-sequence
-feedback to the local TSV.
+#### Independent Zenz learning controls
+
+The configuration dialog separates **Zenz learning (Mozc conversion history)** from **Zenz learning (correction feedback)**:
+
+| Setting | Purpose | When disabled |
+| --- | --- | --- |
+| **C: Learn confirmed Zenz corrections into Mozc conversion history** | Adds explicitly committed Zenz corrections to regular Mozc history | Disables this additional Zenz-to-Mozc learning path, not ordinary Mozc history itself |
+| **A: Record acceptance/rejection of Zenz corrections** | Writes observations to the local feedback TSV | Stops new recording without deleting stored feedback |
+| **B: Automatically reuse recorded feedback** | Adjusts candidate ranking, replays live corrections, and applies statistical auto-blocking | Stops automatic reuse; explicit manual hard rejects remain in effect |
+
+These three preferences are independent. **A=OFF/B=ON** continues to use existing feedback without adding new observations, while **A=OFF/C=ON** can still learn into Mozc history. For new Mozkey configurations all three default to ON. Previously saved legacy preferences are inherited only for fields not explicitly saved under the new settings.
+
+With A enabled, a displayed Zenz result is not recorded simply because it was shown. Accepted full-sequence feedback is appended when the user explicitly commits the result (for example with Enter or direct-commit punctuation). C writes to Mozc history separately.
+
+#### Minimum reading length for automatic Zenz feedback reuse
+
+Short Japanese readings often have many homophones, and the appropriate spelling can depend heavily on context. Reusing a small number of feedback observations as a strong general preference could over-promote or suppress a candidate in unrelated contexts. This gate **continues recording feedback while limiting its automatic influence on short readings**. The seven-character default is a configurable precaution, not a claim that length alone resolves ambiguity.
+
+For new or otherwise unset configurations, **automatic reuse of stored Zenz
+feedback is enabled only for full-sequence readings of 7 or more Unicode code
+points**. This counts characters in the full reading, not UTF-8 bytes or Roman
+keystrokes. The setting is enabled by default and can be disabled or adjusted
+from 1 to 20 characters in the config dialog. For example, `あしたはあめ` (6)
+is excluded and `おねがいします` (7) is eligible.
+
+Shorter readings still undergo fresh Zenz inference, and their accepted and
+rejected observations are still recorded. However, stored feedback for those
+readings is not used to adjust normal candidate ranking, immediately replay a
+previous correction, or automatically block a fresh Zenz result. Explicit
+manual hard rejects remain effective regardless of reading length. Records are
+not removed: disabling the gate or lowering the threshold makes previously
+recorded feedback eligible for reuse again.
+
+This is **separate from the minimum length required to initiate fresh Zenz
+correction**. It does not disable ordinary Mozc conversion or Mozc user-history
+learning, including the separate history-learning path for committed Zenz
+results.
 
 Secret / Incognito mode is an exception: local Zenz inference remains active,
 but Zenz feedback personalization stops both reading and writing. Stored
@@ -1127,10 +1329,7 @@ feedback available again.
 After that explicit commit, the session keeps a short rollback window for the
 accepted observation. If Backspace, Escape, Revert, Undo, Ctrl+Z, or a similar
 correction action occurs before the next real text input or post-commit context
-transition closes the window, Mozkey appends `accepted_rollback` instead of
-deleting or rewriting the stored row. The rollback compensates exactly the
-just-recorded acceptance and is not rejected feedback, so it does not increase
-ordinary-reject or auto-block negative evidence. IMEOff / MakeSureIMEOff are
+transition closes the window, Mozkey appends `accepted_rollback` **only if the preceding acceptance was successfully persisted**. If the accepted append failed, Undo will not add a compensation row that could subtract from earlier valid observations. The rollback is not rejected feedback, so it does not increase ordinary-reject or auto-block negative evidence. IMEOff / MakeSureIMEOff are
 treated as confirmation rather than cancellation and close the rollback window
 while keeping the acceptance. Moving from a visible Zenz correction to normal
 conversion operations, such as Space or candidate movement, is separate and
@@ -1162,11 +1361,7 @@ continued typing changes the final reading, the shadow observation is neutral an
 does not update feedback. Explicit hard rejects do not create shadow observations
 and therefore do not self-recover.
 
-The feedback TSV is scoped to full Zenz sequences: a complete reading key, a
-complete correction value, and a coarse non-reversible context class. It does not
-store segment-local or lexical-unit feedback. Accepted Zenz corrections may still be learned into Mozc user history as
-external conversion results, and when runtime conditions allow it that
-generalized learning is applied immediately at the same explicit commit point.
+The feedback TSV is scoped to full Zenz sequences: a complete reading key, a complete correction value, and a coarse non-reversible context class. It does not store segment-local or lexical-unit feedback. With C enabled and privacy/history conditions satisfied, accepted Zenz corrections can also be learned into Mozc user history independently of A, with generalized learning applied at the explicit commit point.
 This is a separate Mozc-history path rather than an additional Zenz
 feedback-store record. Mozkey keeps an in-process revert handle for the short
 rollback window; Backspace, Escape, Revert, Undo, and similar immediate
@@ -1240,10 +1435,10 @@ corrections such as `かれはてんてきです` -> `彼は天敵です`.
 
 Feedback learned in a `sensitive_like` context is not reused for ordinary-context candidate ranking.
 
-Zenz feedback data can be managed from the config dialog. The management dialog
-shows learned entries in a read-only table and supports search, import, export,
-single-entry deletion, and full deletion. This avoids requiring users to edit the
-TSV file directly.
+Zenz correction-feedback data can be managed from the config dialog. The management dialog shows feedback entries in a read-only table and supports search, import, export, single-entry deletion, and full deletion. Removing feedback entries does not remove any separately learned Mozc conversion-history entries. This avoids requiring users to edit the
+TSV file directly. The `feedback applicability` column identifies shorter
+readings as `対象外（記録のみ）` (record only) and explicit manual hard blocks as
+`手動ブロック有効` (manual block active).
 
 The management dialog can also explicitly block a selected Zenz correction.
 Already blocked corrections cannot be blocked again. To unblock a correction,
@@ -1369,6 +1564,20 @@ For example:
 
 This makes immediate correction after conversion confirmation behave closer to user intent.
 
+### Learning complete readings and segment preferences from accepted suggestions
+
+When a user **explicitly selects and commits** a suggestion whose reading extends beyond the typed prefix, Mozkey can use the suggestion's complete reading and the segments verified against ordinary conversion to learn spelling preferences in Mozc's user-segment history.
+
+For example, selecting `私の名前` (complete reading `わたしのなまえ`) from a suggestion shown after typing only `わたし` can teach the verified individual segments to ordinary conversion. The system does not mistake the shorter typed prefix for the reading of the entire accepted phrase.
+
+If the suggestion provides segment boundaries, Mozkey checks them; otherwise, it may establish correspondence through normal conversion or strictly verified reverse-reading resolution. Strong selection-history markers use the candidate ordering **after normal-conversion postprocessing**, not the raw dictionary order. If the candidate surface, reading, segment boundaries, or displayed ranking cannot be established reliably, the extra segment-level learning is skipped rather than guessed.
+
+The normal committed text and existing suggestion-history learning are preserved, and other commit handlers are not run a second time. Pending cleanup from a preceding Undo is resolved **before** examining displayed candidate ranks or writing a new preference, so an earlier deferred Undo cannot remove a newly recommitted preference.
+
+This additional learning obeys the existing history and privacy gates, including Incognito, password fields, and private input. It applies to supported desktop suggestion commits, not indiscriminately to mobile mixed conversion or zero-query suggestions. It is distinct from Zenz correction-feedback learning and reuse.
+
+This learning path has been built, regression-tested, and exercised on Windows. The macOS runtime behavior of this change has not yet been verified.
+
 ### Multiple commands per key binding
 
 The keymap editor can assign multiple commands to one key binding as an ordered command sequence.
@@ -1382,6 +1591,58 @@ Examples:
 Commands are executed from left to right. If the input state changes during the sequence, the following command is resolved against the current state at that point. For example, `Convert → ConvertNext` first enters conversion from composition and then moves to the next candidate.
 
 In exported keymap files, command sequences are stored with `|`, such as `Commit|IMEOff` or `Convert|ConvertNext`. In the keymap editor UI, they are displayed with arrows, such as `Commit → IMEOff`.
+
+### Manual Zenz correction and delayed keymap sequences
+
+The keymap editor provides `ForceZenzLiveCorrection` (normal manual correction), `ForceZenzLiveCorrectionWithoutFeedback` (manual correction that bypasses automatic reuse of stored Zenz feedback for this invocation), and `Delay(ms)` (a pause before subsequent commands).
+
+- **Normal manual Zenz correction** asynchronously refines uncommitted text in Composition or Conversion using the current Mozc conversion as its baseline. Stored Zenz feedback is applied according to the usual settings.
+- **Manual correction without feedback reuse** bypasses stored Zenz feedback for normal-candidate ranking, immediate correction reuse, and statistical auto-blocking on this invocation. When invoked from Conversion, it recomputes a feedback-free Mozc baseline. Normal Mozc user history and user-dictionary entries remain available, and explicit user-defined manual hard rejects still apply. "Ignore feedback learning" refers to **previously stored feedback being consulted**: new accepted-feedback recording (A) and Mozc-history learning (C) still follow their independent settings when the result is committed.
+- **Both manual commands** work even when automatic Zenz live correction is OFF and bypass the automatic minimum-reading-length threshold. Password/privacy and input eligibility checks remain in effect, and the result is not guaranteed to be adopted. If feedback-bypass reconversion fails, the prior candidates, input mode, and learning rollback ownership are preserved.
+- **Delay**: `Delay(700)` resumes the remaining steps after 700 ms. Values from 0 through 5000 milliseconds are supported; `Delay(0)` does not wait. This delay is separate from the automatic live-conversion and Zenz debounce settings.
+
+Practical custom bindings (examples, **not the defaults**):
+
+```text
+Precomposition + Space -> ReconvertSelectionOrInsertSpace|Delay(700)|ForceZenzLiveCorrection
+Composition + Shift Space -> ForceZenzLiveCorrection
+Conversion + Shift Space -> ForceZenzLiveCorrection
+Composition + Ctrl Shift Space -> ForceZenzLiveCorrectionWithoutFeedback
+Conversion + Ctrl Shift Space -> ForceZenzLiveCorrectionWithoutFeedback
+```
+
+The first binding is **Windows TSF-specific**: with selected committed text, Space requests reconversion, waits 700 ms, then requests manual Zenz correction; without a selection, it keeps the usual space-insertion fallback. The application must support reconversion. Lines 2–3 use Shift+Space for normal manual correction; lines 4–5 use Ctrl+Shift+Space to bypass automatic feedback reuse. Configure separate rows for Composition and Conversion.
+
+**Constraints and interruption behavior**:
+
+- `Delay` cannot be the first step. In the editor, double-click a `Delay` step to change its milliseconds; double-clicking a regular step keeps the existing remove behavior.
+- Both `ForceZenzLiveCorrection` and `ForceZenzLiveCorrectionWithoutFeedback` must be the **last** step; `ForceZenzLiveCorrectionWithoutFeedback|Delay(700)|Commit` is invalid. This prevents subsequent commands from replacing an asynchronous Zenz callback.
+- If Space or Shift+Space already has a command in the same input state, **replace** that binding rather than adding a duplicate row. In particular, Shift+Space may replace an existing alternate-space action, and OS/application shortcuts can intercept keys before Mozkey receives them.
+- A different key action, mouse candidate selection, or input-context change while waiting invalidates the pending continuation so that an old delayed command does not act on the new input.
+- Space can still switch a visible Zenz correction back to ordinary Mozc conversion. A separately bound manual Zenz action can request another correction from conversion state. The `ZenzConversion` keymap state now allows Zenz-specific bindings.
+
+Note: Selected-text reconversion (`ReconvertSelectionOrInsertSpace`) is Windows-only. Manual Zenz correction combined with delayed key sequences is not guaranteed to work on macOS or Linux.
+
+### Key bindings during live conversion and Zenz correction
+
+The keymap editor includes **Live converting** (`LiveConversion`) and **Zenz correction** (`ZenzConversion`). The first applies while Mozc live conversion is active; the second applies while a Zenz correction is displayed.
+
+With the built-in keymaps, Backspace behaves as follows:
+
+| Input state | Backspace action |
+| --- | --- |
+| Ordinary conversion | Cancel conversion and restore the reading |
+| Live conversion | Delete one character from the reading and reconvert |
+| Zenz correction originating from live conversion | Delete one character from the reading and reconvert |
+| Manual Zenz correction originating from ordinary conversion | Cancel the correction and restore the reading |
+
+With the built-in keymaps, Space during Zenz correction restores the underlying Mozc result without committing the Zenz result. If the correction originated from live conversion, you can continue editing the reading with live conversion. Manual Zenz correction originating from ordinary conversion returns to ordinary conversion.
+
+```text
+ZenzConversion + Space -> RevertZenzToMozc
+```
+
+**Return to ordinary Mozc conversion** (`RevertZenzToMozc`) can also be assigned to another key. Configure it as a single command, not as part of a command sequence. Explicit bindings in CUSTOM keymaps take precedence.
 
 ### Delete candidate history / hide candidate
 
@@ -1417,9 +1678,9 @@ Users with an existing custom keymap can enable this behavior by selecting the M
 
 ### Independent left/right Shift and Ctrl key bindings (Windows)
 
-On Windows, left/right Shift and left/right Ctrl can be configured as separate keys in the keybinding editor.
+On Windows, you can assign different IME actions to left/right Shift and Ctrl keys. For example, right Shift can turn the IME on and left Shift can turn it off.
 
-For example:
+Examples:
 
 - `DirectInput + RightShift -> IMEOn`
 - `Precomposition + LeftShift -> IMEOff`
@@ -1428,15 +1689,27 @@ For example:
 - `DirectInput + RightCtrl -> IMEOn`
 - `Precomposition + LeftCtrl -> IMEOff`
 
-This allows assigning different IME actions to the left and right Shift/Ctrl keys.
+The keybinding editor also lets you select **Ctrl and Shift sides independently**. After capturing a key combination, choose `Either side`, `Left only`, or `Right only` for each modifier present in that binding. A selector is disabled if the binding does not contain that modifier.
 
-Generic Ctrl key bindings such as `Ctrl j` continue to work with either left or right Ctrl.
+`Either side` uses the original generic `Ctrl` / `Shift` semantics. Existing bindings such as `Ctrl j` continue to work with either Ctrl key. When available, the physically captured left/right modifier becomes the initial side selection.
 
-When a key is explicitly assigned to `IMEOn` or `IMEOff`, the mode indicator is
-also shown even if Mozc is already in the requested state. For example, pressing
-an `IMEOff` key while IME is already off still shows the direct-input indicator.
-This makes mode-confirmation keys useful as explicit visual feedback, not only
-as state-changing toggles.
+Generic and side-specific bindings are both supported, but **overlapping assignments in the same input state cannot be saved with different commands**. For example, `Ctrl Delete` and `LeftCtrl Delete` cannot be mapped to different commands in the same state because a physical left-Ctrl-plus-Delete input would match both.
+
+CapsLock-aware matching preserves the side-specific and generic shortcut fallback behavior. Dedicated Windows `VK_IME_ON` / `VK_IME_OFF` keys do not treat the CapsLock toggle alone as a held shortcut modifier.
+
+Simultaneous left-and-right modifier presses, particularly TSF key-up timing for modifier-only chords, do not have fully guaranteed release semantics. An imported binding explicitly requiring both sides of one modifier family is preserved, but its corresponding three-choice side selector is disabled because it cannot represent that condition.
+
+When a key is explicitly assigned to `IMEOn` or `IMEOff`, the mode indicator is also shown even if Mozc is already in the requested state. For example, pressing an `IMEOff` key while IME is already off still shows the direct-input indicator.
+
+This lets you use an IME on/off key not only to change the input mode, but also to visually confirm the current mode.
+
+### Return to hiragana from temporary ASCII input with IME ON (Windows)
+
+When temporary half-width ASCII input is active (for example, after a Shift-triggered mode switch), pressing a key mapped to `IMEOn` changes the input mode to hiragana **without committing the current preedit**. The Windows taskbar mode indicator updates to hiragana (`あ`).
+
+With Shift-based temporary ASCII input enabled, typing `Shift+G` → `o` → `o` → `IMEOn` → `a` keeps `Gooあ` in the same uncommitted composition. The return mode is hiragana even if the temporary ASCII input was entered from katakana.
+
+This applies only while the current mode is half-width ASCII and the stored comeback mode differs from it. Pressing `IMEOn` in ordinary hiragana input or in explicit half-width ASCII input whose comeback mode is also half-width ASCII keeps the previous behavior. `IMEOff` still switches to direct input as before.
 
 ### Windows default IME setting
 
@@ -1455,8 +1728,11 @@ On Windows, the config dialog can switch the Mozkey IME icon.
 The available styles are:
 
 - Default
+- Monochrome (Light/Dark)
 - Monochrome (Black)
 - Monochrome (White)
+
+`Monochrome (Light/Dark)` preserves the shape of the existing black monochrome icon and adds a thin white inverse-color edge only on the transparent side of the glyph. It is a static icon designed to remain visible on both light and dark surfaces; it does not switch icon resources when the Windows system theme changes.
 
 This setting updates the `IconFile` / `IconIndex` values registered in the Windows TSF language profile for Mozkey, and applies to the IME icon shown in the taskbar and IME list.
 
@@ -1553,6 +1829,31 @@ is automatically repositioned to stay on-screen. Reset restores the indicator
 theme and custom appearance values to their defaults without changing whether
 the indicator itself is enabled.
 
+### Windows TSF private input (`IS_PRIVATE`)
+
+On Windows, an input context whose TSF input scope includes `IS_PRIVATE` is
+handled as a private-input state distinct from Mozkey Secret / Incognito mode.
+In environments such as Chrome Incognito, Edge InPrivate, and Firefox Private
+Browser that report this scope, existing Mozc learning history and Zenz
+feedback can still contribute to conversion and ranking, and local Zenz
+inference continues to run, but new persistent learning originating from that
+private input is not stored.
+
+For the normal `DEFAULT_HISTORY` setting, the affected request is treated like
+`READ_ONLY`: existing history remains readable while new Mozc history and
+suggestion-history writes are suppressed. Stored Zenz feedback remains
+readable, but Mozkey does not persist new feedback or teach an accepted Zenz
+result back into Mozc history from that private input. Existing `READ_ONLY` and
+`NO_HISTORY` settings are preserved rather than being replaced.
+
+While private input is active, Mozkey overlays a small shield on the Windows
+taskbar input-mode icon and on the IME mode indicator. The shield represents
+TSF `IS_PRIVATE`; enabling Mozkey Secret / Incognito mode alone does not show
+the same badge. The normal taskbar mode glyph, the private shield, and the
+disabled `X` switch between black and white with the Windows system light/dark
+theme and refresh when that theme changes. The disabled `X` keeps precedence
+when the IME is disabled.
+
 ### Vertical writing support (Windows / macOS)
 
 On Windows and macOS, Mozkey lays out the candidate window, prediction/suggestion display, infolist, and live-conversion ruby for vertical writing while preserving the existing horizontal-writing behavior.
@@ -1602,13 +1903,13 @@ Pending-romaji presentation metadata is also preserved through live-conversion a
 
 The presentation is applied through a dedicated Windows TSF display attribute. In Gecko-based hosts such as Firefox, Mozkey uses a subdued text color matched to the editor background only when that background can be sampled safely. Selection-painted regions, clipped geometry, and non-uniform surfaces are not cached as editor backgrounds; Mozkey falls back to a compatibility presentation instead. When the feature is OFF, no screen sampling is performed for this feature.
 
-The config dialog also allows the following display colors to be configured separately for input text, the converting segment, and Zenz live correction:
+The config dialog also allows the following display colors to be configured separately for input text, the converting segment, and "Text being corrected by Zenz":
 
 - Text color
 - Background color
 - Underline color
 
-For new or otherwise unset profiles, the default underline color is `#30DCC8` for input text and `#C1A5AB` for the converting segment. Zenz live correction uses a dedicated underline color that defaults to enabled with `#C4DC6C`. Its dedicated text and background colors default to disabled; for each disabled Zenz color channel, Mozkey falls back to the corresponding custom converting-segment color when enabled, otherwise to the existing Windows TSF presentation. Explicitly stored color choices and enable/disable states are preserved.
+For new or otherwise unset profiles, the default underline color is `#30DCC8` for input text and `#C1A5AB` for the converting segment. The "Text being corrected by Zenz" category uses a dedicated underline color that defaults to enabled with `#C4DC6C`. Its dedicated text and background colors default to disabled; for each disabled Zenz color channel, Mozkey falls back to the corresponding custom converting-segment color when enabled, otherwise to the existing Windows TSF presentation. Explicitly stored color choices and enable/disable states are preserved.
 
 These options are intended to improve the visibility of uncommitted text, especially for users who need stronger visual contrast while composing or converting Japanese text.
 
@@ -1688,6 +1989,10 @@ bazelisk build \
 
 A generic package built without `--define=macos_zenz_runtime=1` should not be
 treated as a distributable Zenz-enabled macOS PKG.
+
+**Zenz bundling and installability are separate controls.** The command above generates a guarded package whose installation is intentionally blocked. Only when deliberately preparing an audited, installable package, add `--define=MOZKEY_INSTALLABLE=1` to that Bazel command together with `--config=oss_macos`. Inspect the packaged preinstall script and receipt version before installation. See the [macOS installer test guide](src/mac/MOZKEY_MACOS_INSTALL_TESTING.md) for the safety contract and 27 regression cases.
+
+On a physical Mac, Mozkey 0.7.7 (internal installer version `100.7.7`) was reinstalled over a verified orphan receipt without `pkgutil --forget`. The input-source menu required logout/login before `Hiragana (Mozkey)` became available after GUI installation. The tested development PKGs were unsigned at the package level and not notarized; a public macOS installer is not yet provided in Releases.
 
 The formal architecture/runtime gate verifies the final `.pkg` on Apple
 Silicon, transfers that exact SHA-256-identical package artifact to a native

@@ -2346,7 +2346,10 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $uninstallLog = Join-Path $env:RUNNER_TEMP "tsf-host-uninstall.log"
-          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+          # Start-Process -Wait waits for the full descendant tree.  An
+          # unrelated surviving descendant must not block MSI client cleanup.
+          # Wait directly for this msiexec client, with a bounded timeout.
+          $process = Start-Process msiexec.exe -PassThru -ArgumentList @(
             "/x",
             "`"$env:MSI`"",
             "/qn",
@@ -2354,10 +2357,21 @@ jobs:
             "/l*v",
             "`"$uninstallLog`""
           )
+          Write-Host "MSI_UNINSTALL_CLIENT_PID=$($process.Id)"
+          if (-not $process.WaitForExit(180000)) {
+            Write-Host "MSI_UNINSTALL_CLIENT_TIMEOUT=180s"
+            if (Test-Path -LiteralPath $uninstallLog) {
+              Write-Host "===== MSI uninstall log tail ====="
+              Get-Content -LiteralPath $uninstallLog -Tail 80 |
+                ForEach-Object { Write-Host $_ }
+            }
+            throw "ARM64 MSI uninstall client did not exit within 180 seconds"
+          }
 
-          Write-Host "msiexec uninstall exit = $($process.ExitCode)"
-          if ($process.ExitCode -notin @(0, 1605, 3010)) {
-            throw "ARM64 MSI uninstall failed with exit code $($process.ExitCode)"
+          $exitCode = $process.ExitCode
+          Write-Host "MSI_UNINSTALL_CLIENT_EXIT=$exitCode"
+          if ($exitCode -notin @(0, 1605, 3010)) {
+            throw "ARM64 MSI uninstall failed with exit code $exitCode"
           }
 
       - name: Upload TSF application-host evidence

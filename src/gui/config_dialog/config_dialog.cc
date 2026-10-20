@@ -292,36 +292,45 @@ ConfigDialog::ConfigDialog()
           static_cast<int>(config::Config::WINDOWS_IME_ICON_DEFAULT)) {
   setupUi(this);
 
-  // QScrollArea has its own viewport, and the viewport may paint a different
-  // background from ordinary tab pages.  Do not paint it with a palette color
-  // and do not use stylesheets here, because stylesheets can interfere with
-  // native QCheckBox and QFrame line rendering.  Make only the scroll area
-  // surface transparent so the underlying tab page paints the background.
-  inputSupportScrollArea->setFrameShape(QFrame::NoFrame);
+  // Both scrollable tabs must preserve the native tab-page background and
+  // avoid stylesheets that can affect checkbox and separator rendering.
+  const auto prepare_scroll_area = [](QScrollArea* area, QWidget* contents) {
+    area->setFrameShape(QFrame::NoFrame);
+    area->setAutoFillBackground(false);
+    area->viewport()->setAutoFillBackground(false);
+    contents->setAutoFillBackground(false);
+    area->setAttribute(Qt::WA_StyledBackground, false);
+    area->viewport()->setAttribute(Qt::WA_StyledBackground, false);
+    contents->setAttribute(Qt::WA_StyledBackground, false);
+    area->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
+    contents->setAttribute(Qt::WA_TranslucentBackground, true);
+    area->viewport()->setAttribute(Qt::WA_NoSystemBackground, true);
+    contents->setAttribute(Qt::WA_NoSystemBackground, true);
+    area->setStyleSheet(QString());
+    area->viewport()->setStyleSheet(QString());
+    contents->setStyleSheet(QString());
+  };
+  prepare_scroll_area(inputSupportScrollArea,
+                      inputSupportScrollAreaWidgetContents);
+  prepare_scroll_area(inputAppearanceScrollArea,
+                      inputAppearanceScrollAreaWidgetContents);
 
-  inputSupportScrollArea->setAutoFillBackground(false);
-  inputSupportScrollArea->viewport()->setAutoFillBackground(false);
-  inputSupportScrollAreaWidgetContents->setAutoFillBackground(false);
+  // Move the existing TSF preedit widgets without recreating them. The
+  // existing signal connections, config fields, and translations are reused.
+  inputSupportContentLayout->removeWidget(preeditDisplayColorGroupBox);
+  preeditDisplayColorGroupBox->setParent(
+      inputAppearanceScrollAreaWidgetContents);
+  inputAppearanceContentLayout->insertWidget(0, preeditDisplayColorGroupBox);
+  preeditDisplayColorGroupBox->show();
 
-  inputSupportScrollArea->setAttribute(Qt::WA_StyledBackground, false);
-  inputSupportScrollArea->viewport()->setAttribute(Qt::WA_StyledBackground,
-                                                   false);
-  inputSupportScrollAreaWidgetContents->setAttribute(Qt::WA_StyledBackground,
-                                                     false);
-
-  inputSupportScrollArea->viewport()->setAttribute(
-      Qt::WA_TranslucentBackground, true);
-  inputSupportScrollAreaWidgetContents->setAttribute(
-      Qt::WA_TranslucentBackground, true);
-
-  inputSupportScrollArea->viewport()->setAttribute(Qt::WA_NoSystemBackground,
-                                                   true);
-  inputSupportScrollAreaWidgetContents->setAttribute(
-      Qt::WA_NoSystemBackground, true);
-
-  inputSupportScrollArea->setStyleSheet(QString());
-  inputSupportScrollArea->viewport()->setStyleSheet(QString());
-  inputSupportScrollAreaWidgetContents->setStyleSheet(QString());
+#if !defined(_WIN32) && !defined(__APPLE__)
+  // On Linux neither the detailed renderer appearance nor TSF preedit
+  // attributes are supported. Keep the tab out of the navigation entirely.
+  const int appearance_index = configDialogTabWidget->indexOf(inputAppearanceTab);
+  if (appearance_index >= 0) {
+    configDialogTabWidget->removeTab(appearance_index);
+  }
+#endif  // !defined(_WIN32) && !defined(__APPLE__)
 
   Qt::WindowFlags flags = windowFlags();
   flags &= ~Qt::WindowContextHelpButtonHint;
@@ -350,8 +359,10 @@ ConfigDialog::ConfigDialog()
 
 #if defined(__linux__)
   // The last "misc" tab has no valid configs on Linux
-  constexpr int kMiscTabIndex = 6;
-  configDialogTabWidget->removeTab(kMiscTabIndex);
+  const int misc_index = configDialogTabWidget->indexOf(miscTab);
+  if (misc_index >= 0) {
+    configDialogTabWidget->removeTab(misc_index);
+  }
 #endif  // __linux__
 #endif  // NDEBUG
 
@@ -395,6 +406,11 @@ ConfigDialog::ConfigDialog()
       QString::fromUtf8(" 文字"));
   zenzLiveCorrectionRightContextLengthSpinBox->setSpecialValueText(
       QString::fromUtf8("使わない"));
+
+  zenzFeedbackMinKeyLengthSpinBox->setRange(1, 20);
+  zenzFeedbackMinKeyLengthSpinBox->setSingleStep(1);
+  zenzFeedbackMinKeyLengthSpinBox->setSuffix(
+      QString::fromUtf8(" 文字以上"));
 
   zenzFeedbackAutoBlockRejectThresholdSpinBox->setRange(1, 999);
   zenzFeedbackAutoBlockRejectThresholdSpinBox->setSingleStep(1);
@@ -548,9 +564,14 @@ ConfigDialog::ConfigDialog()
   QObject::connect(zenzLiveCorrectionRightContextCheckBox,
                    SIGNAL(stateChanged(int)), this,
                    SLOT(SelectZenzRightContextSetting(int)));
-  QObject::connect(zenzFeedbackLearningCheckBox,
+  QObject::connect(zenzFeedbackReuseCheckBox,
                    SIGNAL(stateChanged(int)), this,
-                   SLOT(SelectZenzFeedbackLearningSetting(int)));
+                   SLOT(SelectZenzFeedbackReuseSetting(int)));
+  QObject::connect(zenzFeedbackMinKeyLengthCheckBox,
+                   &QCheckBox::stateChanged, this, [this](int) {
+                     SelectZenzFeedbackReuseSetting(
+                         zenzFeedbackReuseCheckBox->isChecked());
+                   });
   QObject::connect(zenzFeedbackAutoBlockCheckBox,
                    SIGNAL(stateChanged(int)), this,
                    SLOT(SelectZenzFeedbackAutoBlockSetting(int)));
@@ -673,24 +694,29 @@ ConfigDialog::ConfigDialog()
   IMEHotKeyDisabledCheckBox->setVisible(false);
 #endif  // _WIN32
 
-  // QScrollArea breaks the minimum-width chain from its scroll widget to the
-  // surrounding dialog.  Synchronize the Advanced tab's minimum width only
-  // after translated labels, config-backed table contents, and all
-  // platform-specific visibility have reached their final initial state.
-  // Keep an as-needed horizontal scrollbar as a safety valve for unusual font,
-  // translation, or accessibility configurations.
-  inputSupportContentLayout->invalidate();
-  inputSupportContentLayout->activate();
-  const int input_support_minimum_width =
-      inputSupportScrollAreaWidgetContents->minimumSizeHint().width();
-  if (input_support_minimum_width > 0) {
-    const int scrollbar_extent = inputSupportScrollArea->style()->pixelMetric(
-        QStyle::PM_ScrollBarExtent, nullptr, inputSupportScrollArea);
-    inputSupportScrollArea->setMinimumWidth(
-        input_support_minimum_width + scrollbar_extent +
-        2 * inputSupportScrollArea->frameWidth());
-  }
-
+  // QScrollArea does not automatically propagate child minimumSizeHint().
+  // Recalculate the two tab widths after translations and platform filtering.
+  const auto synchronize_minimum_width = [](QScrollArea* area,
+                                            QWidget* contents,
+                                            QVBoxLayout* layout) {
+    layout->invalidate();
+    layout->activate();
+    const int content_width = contents->minimumSizeHint().width();
+    if (content_width > 0) {
+      const int scrollbar_width =
+          area->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, area);
+      area->setMinimumWidth(content_width + scrollbar_width +
+                            2 * area->frameWidth());
+    }
+  };
+  synchronize_minimum_width(inputSupportScrollArea,
+                            inputSupportScrollAreaWidgetContents,
+                            inputSupportContentLayout);
+#if defined(_WIN32) || defined(__APPLE__)
+  synchronize_minimum_width(inputAppearanceScrollArea,
+                            inputAppearanceScrollAreaWidgetContents,
+                            inputAppearanceContentLayout);
+#endif  // _WIN32 || __APPLE__
   RecordCurrentStateAsApplied();
   suppress_apply_button_update_ = false;
   EnableApplyButton();
@@ -1021,7 +1047,7 @@ constexpr uint32_t kMaxLiveConversionDelayMsec = 1000;
 constexpr uint32_t kDefaultLiveConversionMinKeyLength = 2;
 constexpr uint32_t kMinLiveConversionMinKeyLength = 1;
 constexpr uint32_t kMaxLiveConversionMinKeyLength = 20;
-constexpr uint32_t kDefaultZenzLiveCorrectionDelayMsec = 1000;
+constexpr uint32_t kDefaultZenzLiveCorrectionDelayMsec = 700;
 constexpr uint32_t kMaxZenzLiveCorrectionDelayMsec = 5000;
 constexpr uint32_t kDefaultZenzDeferredPresentationTimeoutMsec = 250;
 constexpr uint32_t kMinZenzDeferredPresentationTimeoutMsec = 50;
@@ -1609,18 +1635,22 @@ std::wstring BuildRestoreDefaultImeScript() {
 void ShowZenzFeedbackManagementDialog(QWidget* parent,
                                       const config::Config& current_config) {
   QDialog dialog(parent);
-  dialog.setWindowTitle(QString::fromUtf8("Zenz 学習データの管理"));
+  dialog.setWindowTitle(QString::fromUtf8("Zenz フィードバック学習データの管理"));
   dialog.resize(760, 440);
 
   session::ZenzFeedbackStore store;
 
-  session::ZenzFeedbackAutoBlockPolicy auto_block_policy;
-  auto_block_policy.enabled =
+  session::ZenzFeedbackReusePolicy reuse_policy;
+  reuse_policy.minimum_key_length_enabled =
+      current_config.use_zenz_feedback_min_key_length();
+  reuse_policy.minimum_key_length = std::clamp<uint32_t>(
+      current_config.zenz_feedback_min_key_length(), 1, 20);
+  reuse_policy.auto_block_policy.enabled =
       current_config.use_zenz_auto_block_rejected_correction();
-  auto_block_policy.minimum_reject_count =
+  reuse_policy.auto_block_policy.minimum_reject_count =
       static_cast<int>(current_config.zenz_auto_block_reject_threshold());
-  auto_block_policy.minimum_reject_percentage = static_cast<int>(
-      current_config.zenz_auto_block_minimum_reject_percentage());
+  reuse_policy.auto_block_policy.minimum_reject_percentage =
+      static_cast<int>(current_config.zenz_auto_block_minimum_reject_percentage());
 
   QVBoxLayout* root_layout = new QVBoxLayout(&dialog);
 
@@ -1631,9 +1661,9 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
 
   QLabel* description_label = new QLabel(
       QString::fromUtf8(
-          "Zenz 補正の学習データを管理します。"
-          "ここでは、補正結果として保存された読みと候補の記録を"
-          "安全に確認・削除できます。"),
+          "Zenz 補正の採用・却下・手動ブロックの記録を管理します。"
+          "記録は次回以降の候補順位や自動ブロックの判定に使われます。"
+          "Mozc の通常変換履歴とは別に保存されています。"),
       &dialog);
   description_label->setWordWrap(true);
 
@@ -1641,7 +1671,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
       new QPushButton(QString::fromUtf8("詳しく..."), &dialog);
   details_button->setFixedWidth(84);
   details_button->setToolTip(QString::fromUtf8(
-      "状態ラベル、Zenz 学習の記録条件、通常の変換履歴との違いを表示します"));
+      "状態ラベル、フィードバック学習の記録条件、通常の変換履歴との違いを表示します"));
 
   description_layout->addWidget(description_label, 1);
   description_layout->addWidget(details_button, 0, Qt::AlignTop);
@@ -1657,7 +1687,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                              "読み全体、補正後の候補、文脈クラス、採用/却下の記録です。"
                              "表示された Zenz 補正だけでなく、自動ブロック中に内部で"
                              "生成された同じ補正も、最終確定との比較対象になります。\n\n"
-                             "Zenz 学習データは full-sequence 単位です。"
+                             "フィードバック学習データは full-sequence 単位です。"
                              "単語や文節ごとの学習ではなく、同じ読み全体、同じ文脈クラス、"
                              "同じ補正結果の組み合わせごとに集計します。"
                              "左文脈そのものは保存せず、empty / japanese_only / "
@@ -1686,7 +1716,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                              "弱いマイナス信号です。\n\n"
                              "【記録されない操作】\n"
                              "対応する visible / hidden Zenz 観測がない通常変換、通常候補の"
-                             "選択、通常変換の確定は、この画面の Zenz 学習スコアには"
+                             "選択、通常変換の確定は、この画面のフィードバック学習スコアには"
                              "影響しません。hidden Zenz の読みより入力が伸びた場合も、"
                              "別の full-sequence として扱い、その古い観測は数えません。"
                              "また、Zenz が通常 Mozc と同じ値を返した場合、"
@@ -1715,13 +1745,18 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                              "解除したい場合は、該当エントリを削除して必要に応じて"
                              "再学習してください。\n"
                              "中立: 優先にもブロックにも使うだけの有効な信号がない状態です。\n\n"
+                             "【短い読みの自動 feedback 制限】\n"
+                             "既定では7文字未満の読みは採用・却下履歴を集計しますが、"
+                             "保存済み補正の優先・即時適用・自動ブロックには使いません。"
+                             "手動ブロックだけは文字数に関係なく有効です。"
+                             "対象外かどうかは現在の設定から動的に決まります。\n\n"
                              "【通常の変換履歴との違い】\n"
                              "Zenz の結果を確定した場合、条件によっては通常の変換履歴にも"
                              "反映されます。また、安全に判断できる場合は、直前の通常 Mozc "
                              "ライブ変換文節列へ逆投影し、文節列全体を通常変換履歴に近い形で"
                              "反映します。このとき、Zenz が実際に直した文節だけを"
                              "強い選択履歴として扱います。\n\n"
-                             "そのため、この画面で Zenz 学習データを削除しても、"
+                             "そのため、この画面でフィードバック学習データを削除しても、"
                              "通常の変換履歴にすでに反映された内容は削除されません。"
                              "通常の変換履歴を消したい場合は、設定画面の辞書タブ内にある"
                              "学習履歴のクリアを使用してください。"));
@@ -1737,7 +1772,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
   root_layout->addLayout(search_layout);
 
   QTableWidget* table = new QTableWidget(&dialog);
-  table->setColumnCount(7);
+  table->setColumnCount(8);
   table->setHorizontalHeaderLabels(QStringList()
                                    << QString::fromUtf8("読み")
                                    << QString::fromUtf8("候補")
@@ -1745,7 +1780,8 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                                    << QString::fromUtf8("採用")
                                    << QString::fromUtf8("却下")
                                    << QString::fromUtf8("拒否割合")
-                                   << QString::fromUtf8("状態"));
+                                   << QString::fromUtf8("状態")
+                                   << QString::fromUtf8("feedback適用"));
   table->setSelectionBehavior(QAbstractItemView::SelectRows);
   table->setSelectionMode(QAbstractItemView::SingleSelection);
   table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1828,7 +1864,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
   auto reload_table = [&]() {
     const QString filter = search_edit->text();
     const std::vector<session::ZenzFeedbackEntry> entries =
-        store.ListEntries(auto_block_policy);
+        store.ListEntries(reuse_policy);
 
     table->setRowCount(0);
 
@@ -1859,7 +1895,22 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
               ? QString::fromUtf8("-")
               : QString::fromUtf8("%1 %")
                     .arg(entry.auto_block_reject_percentage));
-      SetTableItem(table, row, 6, FeedbackReasonLabel(entry.reason));
+      QString feedback_status = FeedbackReasonLabel(entry.reason);
+      if (entry.reuse_excluded && entry.auto_blocked) {
+        feedback_status = QString::fromUtf8("自動ブロック条件成立");
+      }
+      SetTableItem(table, row, 6, feedback_status);
+      SetTableItem(
+          table, row, 7,
+          entry.hard_rejected
+              ? QString::fromUtf8("手動ブロック有効")
+              : entry.reuse_excluded
+                    ? QString::fromUtf8("対象外（記録のみ）")
+                    : QString::fromUtf8("有効"));
+      if (entry.reuse_excluded) {
+        table->item(row, 0)->setToolTip(QString::fromUtf8(
+            "短い読みのため自動 feedback 適用対象外。記録・集計は継続します。"));
+      }
 
       table->item(row, 0)->setData(Qt::UserRole, key);
       table->item(row, 1)->setData(Qt::UserRole, value);
@@ -1872,17 +1923,23 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
     table->resizeColumnsToContents();
 
     const QString auto_block_status =
-        auto_block_policy.enabled
+        reuse_policy.auto_block_policy.enabled
             ? QString::fromUtf8(
                   " / 自動ブロック条件 最低拒否 %1 回 / %2 %")
-                  .arg(auto_block_policy.minimum_reject_count)
-                  .arg(auto_block_policy.minimum_reject_percentage)
+                  .arg(reuse_policy.auto_block_policy.minimum_reject_count)
+                  .arg(reuse_policy.auto_block_policy.minimum_reject_percentage)
             : QString::fromUtf8(" / 自動ブロック OFF");
+    const QString min_key_status =
+        reuse_policy.minimum_key_length_enabled
+            ? QString::fromUtf8(" / 自動feedback %1文字以上")
+                  .arg(reuse_policy.minimum_key_length)
+            : QString::fromUtf8(" / 読み文字数制限 OFF");
     status_label->setText(
-        QString::fromUtf8("表示 %1 件 / 全 %2 件%3")
+        QString::fromUtf8("表示 %1 件 / 全 %2 件%3%4")
             .arg(visible_count)
             .arg(static_cast<int>(entries.size()))
-            .arg(auto_block_status));
+            .arg(auto_block_status)
+            .arg(min_key_status));
 
     export_button->setEnabled(!entries.empty());
     clear_button->setEnabled(!entries.empty());
@@ -1906,7 +1963,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                    &dialog, [&]() {
                      const QString path = QFileDialog::getSaveFileName(
                          &dialog,
-                         QString::fromUtf8("Zenz 学習データをエクスポート"),
+                         QString::fromUtf8("フィードバック学習データをエクスポート"),
                          QStringLiteral("zenz_feedback.tsv"),
                          QString::fromUtf8(
                              "TSV ファイル (*.tsv);;すべてのファイル (*)"));
@@ -1918,21 +1975,21 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                        ShowJapaneseCritical(
                            &dialog, dialog.windowTitle(),
                            QString::fromUtf8(
-                               "Zenz 学習データをエクスポートできませんでした。"));
+                               "フィードバック学習データをエクスポートできませんでした。"));
                        return;
                      }
 
                      ShowJapaneseInformation(
                          &dialog, dialog.windowTitle(),
                          QString::fromUtf8(
-                             "Zenz 学習データをエクスポートしました。"));
+                             "フィードバック学習データをエクスポートしました。"));
                    });
 
   QObject::connect(import_button, &QPushButton::clicked,
                    &dialog, [&]() {
                      const QString path = QFileDialog::getOpenFileName(
                          &dialog,
-                         QString::fromUtf8("Zenz 学習データをインポート"),
+                         QString::fromUtf8("フィードバック学習データをインポート"),
                          QString(),
                          QString::fromUtf8(
                              "TSV ファイル (*.tsv);;すべてのファイル (*)"));
@@ -1944,10 +2001,10 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                      message_box.setWindowTitle(dialog.windowTitle());
                      message_box.setIcon(QMessageBox::Question);
                      message_box.setText(
-                         QString::fromUtf8("Zenz 学習データをインポートします。"));
+                         QString::fromUtf8("フィードバック学習データをインポートします。"));
                      message_box.setInformativeText(
                          QString::fromUtf8(
-                             "既存の Zenz 学習データに追加しますか？\n\n"
+                             "既存のフィードバック学習データに追加しますか？\n\n"
                              "「追加」: 既存データに追加\n"
                              "「置き換え」: 既存データを削除してから取り込み\n"
                              "「キャンセル」: 中止"));
@@ -1979,7 +2036,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                        ShowJapaneseCritical(
                            &dialog, dialog.windowTitle(),
                            QString::fromUtf8(
-                               "Zenz 学習データをインポートできませんでした。\n"
+                               "フィードバック学習データをインポートできませんでした。\n"
                                "ファイル形式が壊れているか、未対応の行が含まれています。"));
                        return;
                      }
@@ -1989,7 +2046,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                      ShowJapaneseInformation(
                          &dialog, dialog.windowTitle(),
                          QString::fromUtf8(
-                             "Zenz 学習データをインポートしました。"));
+                             "フィードバック学習データをインポートしました。"));
                    });
 
   QObject::connect(block_button, &QPushButton::clicked,
@@ -2084,7 +2141,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                      message_box.setWindowTitle(dialog.windowTitle());
                      message_box.setIcon(QMessageBox::Warning);
                      message_box.setText(
-                         QString::fromUtf8("選択した Zenz 学習エントリを削除しますか？"));
+                         QString::fromUtf8("選択したフィードバック学習エントリを削除しますか？"));
                      message_box.setInformativeText(
                          QString::fromUtf8("読み: %1\n候補: %2\n文脈クラス: %3")
                              .arg(key, value, context_class));
@@ -2110,7 +2167,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                        ShowJapaneseCritical(
                            &dialog, dialog.windowTitle(),
                            QString::fromUtf8(
-                               "Zenz 学習エントリを削除できませんでした。"));
+                               "フィードバック学習エントリを削除できませんでした。"));
                        return;
                      }
 
@@ -2123,9 +2180,11 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                      message_box.setWindowTitle(dialog.windowTitle());
                      message_box.setIcon(QMessageBox::Warning);
                      message_box.setText(
-                         QString::fromUtf8("Zenz 学習データをすべて削除しますか？"));
+                         QString::fromUtf8("フィードバック学習データをすべて削除しますか？"));
                      message_box.setInformativeText(
-                         QString::fromUtf8("この操作は元に戻せません。"));
+                         QString::fromUtf8(
+                             "この操作は元に戻せません。\n"
+                             "Mozc の通常変換履歴に追加学習した内容は削除されません。"));
 
                      QPushButton* clear_confirm_button =
                          message_box.addButton(QString::fromUtf8("すべて削除"),
@@ -2145,7 +2204,7 @@ void ShowZenzFeedbackManagementDialog(QWidget* parent,
                        ShowJapaneseCritical(
                            &dialog, dialog.windowTitle(),
                            QString::fromUtf8(
-                               "Zenz 学習データを削除できませんでした。"));
+                               "フィードバック学習データを削除できませんでした。"));
                        return;
                      }
 
@@ -2213,12 +2272,14 @@ constexpr int kTsfProfileIconIndexDefault = 0;
 
 // These values are TSF language profile icon indices in mozc_tip*.dll, not
 // resource IDs.  With the current tip_resource.rc order, IDI_IMM32 is exposed
-// as index 0, and the simple monochrome icons added immediately after it are
-// exposed as indices 15 and 16 on the generated mozc_tip32.dll in the current
-// Windows package.  Keep these values in sync with resource-order validation
+// as index 0, the black/white monochrome icons are indices 15 and 16, and the
+// static high-contrast variant that preserves the black icon silhouette is
+// expected at index 17.  Validate the built DLL whenever this list changes.
+// Keep these values in sync with resource-order validation
 // whenever the TIP icon resource list is changed.
 constexpr int kTsfProfileIconIndexSimpleBlack = 15;
 constexpr int kTsfProfileIconIndexSimpleWhite = 16;
+constexpr int kTsfProfileIconIndexSimpleHighContrast = 17;
 
 constexpr wchar_t kTsfProfileSubKey[] =
     L"SOFTWARE\\Microsoft\\CTF\\TIP\\"
@@ -2244,6 +2305,8 @@ int GetTsfProfileIconIndexForImeIconStyle(
       return kTsfProfileIconIndexSimpleBlack;
     case config::Config::WINDOWS_IME_ICON_MONOCHROME_WHITE:
       return kTsfProfileIconIndexSimpleWhite;
+    case config::Config::WINDOWS_IME_ICON_MONOCHROME_HIGH_CONTRAST:
+      return kTsfProfileIconIndexSimpleHighContrast;
     case config::Config::WINDOWS_IME_ICON_DEFAULT:
     default:
       return kTsfProfileIconIndexDefault;
@@ -2314,6 +2377,8 @@ const wchar_t* GetTsfProfileIconStyleFlagValue(
       return L"monochrome_black";
     case config::Config::WINDOWS_IME_ICON_MONOCHROME_WHITE:
       return L"monochrome_white";
+    case config::Config::WINDOWS_IME_ICON_MONOCHROME_HIGH_CONTRAST:
+      return L"monochrome_high_contrast";
     case config::Config::WINDOWS_IME_ICON_DEFAULT:
     default:
       return L"default";
@@ -2620,6 +2685,10 @@ void ConfigDialog::InitializeWindowsImeIconStyleControls() {
   combo->addItem(TrConfigDialog("Default"),
                  static_cast<int>(
                      config::Config::WINDOWS_IME_ICON_DEFAULT));
+  combo->addItem(
+      TrConfigDialog("Monochrome (Light/Dark)"),
+      static_cast<int>(
+          config::Config::WINDOWS_IME_ICON_MONOCHROME_HIGH_CONTRAST));
   combo->addItem(TrConfigDialog("Monochrome (Black)"),
                  static_cast<int>(
                      config::Config::WINDOWS_IME_ICON_MONOCHROME_BLACK));
@@ -2667,7 +2736,7 @@ void ConfigDialog::InitializeRendererAppearanceControls() {
   // The checkbox and theme combo are defined in the .ui file for config
   // serialization compatibility, then reparented here.
   QWidget* mode_indicator_group =
-      new QWidget(inputSupportScrollAreaWidgetContents);
+      new QWidget(inputAppearanceScrollAreaWidgetContents);
   mode_indicator_group->setObjectName(
       QStringLiteral("modeIndicatorAppearanceGroupBox"));
   mode_indicator_group->setSizePolicy(QSizePolicy::Preferred,
@@ -2959,7 +3028,7 @@ void ConfigDialog::InitializeRendererAppearanceControls() {
                    SLOT(UpdateRendererAppearanceControls()));
 #endif  // _WIN32
 
-  QWidget* group = new QWidget(inputSupportScrollAreaWidgetContents);
+  QWidget* group = new QWidget(inputAppearanceScrollAreaWidgetContents);
   group->setObjectName(QStringLiteral("rendererAppearanceGroupBox"));
   group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
@@ -3421,19 +3490,19 @@ void ConfigDialog::InitializeRendererAppearanceControls() {
                               QStringLiteral("suggestWindow"), true);
   add_ruby_palette_group();
 
-  // Put the frequently used candidate/suggestion/ruby appearance first.
+  // Place candidate/suggestion/ruby first on the Appearance tab.
   // On Windows, keep the input-mode indicator next and the TSF preedit color
   // customization after both sections.
   const int preedit_index =
-      inputSupportContentLayout->indexOf(preeditDisplayColorGroupBox);
+      inputAppearanceContentLayout->indexOf(preeditDisplayColorGroupBox);
   const int renderer_insert_index =
-      preedit_index >= 0 ? preedit_index : inputSupportContentLayout->count();
-  inputSupportContentLayout->insertWidget(renderer_insert_index, group);
+      preedit_index >= 0 ? preedit_index : inputAppearanceContentLayout->count();
+  inputAppearanceContentLayout->insertWidget(renderer_insert_index, group);
 
 #ifdef _WIN32
   const int mode_indicator_insert_index =
-      inputSupportContentLayout->indexOf(group) + 1;
-  inputSupportContentLayout->insertWidget(mode_indicator_insert_index,
+      inputAppearanceContentLayout->indexOf(group) + 1;
+  inputAppearanceContentLayout->insertWidget(mode_indicator_insert_index,
                                           mode_indicator_group);
 #endif  // _WIN32
 }
@@ -3560,7 +3629,14 @@ void ConfigDialog::ConvertFromProto(const config::Config &config) {
   SelectZenzLiveCorrectionSetting(
       static_cast<int>(zenzLiveCorrectionCheckBox->isChecked()));
 
-  SET_CHECKBOX(zenzFeedbackLearningCheckBox, use_zenz_feedback_learning);
+  SET_CHECKBOX(zenzFeedbackRecordingCheckBox, use_zenz_feedback_recording);
+  SET_CHECKBOX(zenzFeedbackReuseCheckBox, use_zenz_feedback_reuse);
+  SET_CHECKBOX(zenzMozcHistoryLearningCheckBox,
+               use_zenz_mozc_history_learning);
+  SET_CHECKBOX(zenzFeedbackMinKeyLengthCheckBox,
+               use_zenz_feedback_min_key_length);
+  zenzFeedbackMinKeyLengthSpinBox->setValue(static_cast<int>(
+      std::clamp<uint32_t>(config.zenz_feedback_min_key_length(), 1, 20)));
 
   SET_CHECKBOX(zenzFeedbackAutoBlockCheckBox,
                use_zenz_auto_block_rejected_correction);
@@ -3582,8 +3658,8 @@ void ConfigDialog::ConvertFromProto(const config::Config &config) {
           std::clamp(zenz_auto_block_minimum_reject_percentage,
                      kMinZenzAutoBlockMinimumRejectPercentage,
                      kMaxZenzAutoBlockMinimumRejectPercentage)));
-  SelectZenzFeedbackLearningSetting(
-      static_cast<int>(zenzFeedbackLearningCheckBox->isChecked()));
+  SelectZenzFeedbackReuseSetting(
+      static_cast<int>(zenzFeedbackReuseCheckBox->isChecked()));
 
   SET_CHECKBOX(useAutoConversion, use_auto_conversion);
   kutenCheckBox->setChecked(config.auto_conversion_key() &
@@ -3888,7 +3964,14 @@ void ConfigDialog::ConvertToProto(config::Config *config) const {
       static_cast<uint32_t>(
           zenzLiveCorrectionRightContextLengthSpinBox->value()));
 
-  GET_CHECKBOX(zenzFeedbackLearningCheckBox, use_zenz_feedback_learning);
+  GET_CHECKBOX(zenzFeedbackRecordingCheckBox, use_zenz_feedback_recording);
+  GET_CHECKBOX(zenzFeedbackReuseCheckBox, use_zenz_feedback_reuse);
+  GET_CHECKBOX(zenzMozcHistoryLearningCheckBox,
+               use_zenz_mozc_history_learning);
+  GET_CHECKBOX(zenzFeedbackMinKeyLengthCheckBox,
+               use_zenz_feedback_min_key_length);
+  config->set_zenz_feedback_min_key_length(
+      static_cast<uint32_t>(zenzFeedbackMinKeyLengthSpinBox->value()));
   GET_CHECKBOX(zenzFeedbackAutoBlockCheckBox,
                use_zenz_auto_block_rejected_correction);
   config->set_zenz_auto_block_reject_threshold(
@@ -4917,9 +5000,11 @@ void ConfigDialog::SelectZenzLiveCorrectionSetting(int state) {
       enabled ? static_cast<int>(
                     zenzLiveCorrectionRightContextCheckBox->isChecked())
               : 0);
-  zenzFeedbackLearningCheckBox->setEnabled(enabled);
-  SelectZenzFeedbackLearningSetting(
-      enabled ? static_cast<int>(zenzFeedbackLearningCheckBox->isChecked()) : 0);
+  // Recording, automatic reuse, and external Mozc history learning are
+  // independent preferences. Keep their controls available even when live
+  // correction is disabled: the feedback candidate rewriter also operates
+  // on normal conversion, and turning live correction back on must not
+  // silently change any of the three persisted choices.
 }
 
 void ConfigDialog::SelectZenzDeferredPresentationSetting(int state) {
@@ -4932,13 +5017,15 @@ void ConfigDialog::SelectZenzDeferredPresentationSetting(int state) {
   zenzDeferredPresentationTimeoutSpinBox->setEnabled(enabled);
 }
 
-void ConfigDialog::SelectZenzFeedbackLearningSetting(int state) {
-  const bool enabled =
-      liveConversionCheckBox->isChecked() &&
-      zenzLiveCorrectionCheckBox->isChecked() &&
-      static_cast<bool>(state);
+void ConfigDialog::SelectZenzFeedbackReuseSetting(int state) {
+  const bool enabled = static_cast<bool>(state);
 
   zenzFeedbackAutoBlockCheckBox->setEnabled(enabled);
+  zenzFeedbackMinKeyLengthCheckBox->setEnabled(enabled);
+  const bool min_key_enabled =
+      enabled && zenzFeedbackMinKeyLengthCheckBox->isChecked();
+  zenzFeedbackMinKeyLengthLabel->setEnabled(min_key_enabled);
+  zenzFeedbackMinKeyLengthSpinBox->setEnabled(min_key_enabled);
 
   SelectZenzFeedbackAutoBlockSetting(
       enabled ? static_cast<int>(
@@ -4948,10 +5035,7 @@ void ConfigDialog::SelectZenzFeedbackLearningSetting(int state) {
 
 void ConfigDialog::SelectZenzFeedbackAutoBlockSetting(int state) {
   const bool enabled =
-      liveConversionCheckBox->isChecked() &&
-      zenzLiveCorrectionCheckBox->isChecked() &&
-      zenzFeedbackLearningCheckBox->isChecked() &&
-      static_cast<bool>(state);
+      zenzFeedbackReuseCheckBox->isChecked() && static_cast<bool>(state);
 
   zenzFeedbackAutoBlockRejectThresholdLabel->setEnabled(enabled);
   zenzFeedbackAutoBlockRejectThresholdSpinBox->setEnabled(enabled);

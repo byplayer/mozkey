@@ -744,6 +744,34 @@ Segments UserSegmentHistoryRewriter::MakeLearningSegmentsFromInnerSegments(
   return ret;
 }
 
+void UserSegmentHistoryRewriter::PrepareForSuggestionLearning(
+    const ConversionRequest& request) {
+  // Undo is normally finalized by Rewrite(). A suggestion can instead be
+  // committed immediately, without an intervening ordinary conversion.
+  // Flush *before* the temporary full-reading probe, so its displayed-rank
+  // comparison cannot consult a preference scheduled for deletion.
+  if (request.request_type() == ConversionRequest::CONVERSION &&
+      request.config().history_learning_level() == Config::DEFAULT_HISTORY &&
+      !request.incognito_mode()) {
+    MaybeApplyPendingRevert(request);
+  }
+}
+
+void UserSegmentHistoryRewriter::FinishWithSuggestionLearningSegments(
+    const ConversionRequest& request, const Segments& committed_segments,
+    const Segments* suggestion_learning_segments) {
+  // Share the original commit's revert_id; do not cause a second history
+  // write. Normal conversion and an unverified suggestion use the original.
+  if (suggestion_learning_segments != nullptr &&
+      suggestion_learning_segments->revert_id() ==
+          committed_segments.revert_id() &&
+      suggestion_learning_segments->conversion_segments_size() > 0) {
+    Finish(request, *suggestion_learning_segments);
+    return;
+  }
+  Finish(request, committed_segments);
+}
+
 void UserSegmentHistoryRewriter::Finish(const ConversionRequest& request,
                                         const Segments& segments) {
   if (request.request_type() != ConversionRequest::CONVERSION) {
@@ -758,6 +786,10 @@ void UserSegmentHistoryRewriter::Finish(const ConversionRequest& request,
     MOZC_VLOG(2) << "history_learning_level is not DEFAULT_HISTORY";
     return;
   }
+
+  // A new commit must never be followed by an older Undo's deferred delete.
+  // This also protects paths that do not run the optional suggestion probe.
+  MaybeApplyPendingRevert(request);
 
   const bool reversible_external =
       request.options().reversible_external_learning;
@@ -894,8 +926,9 @@ void UserSegmentHistoryRewriter::InsertTriggerKey(
 
 bool UserSegmentHistoryRewriter::Rewrite(const ConversionRequest& request,
                                          Segments* segments) const {
-  if (request.request_type() == ConversionRequest::CONVERSION ||
-      !request.key().empty()) {
+  if (!request.options().skip_pending_revert_for_suggestion_learning &&
+      (request.request_type() == ConversionRequest::CONVERSION ||
+       !request.key().empty())) {
     MaybeApplyPendingRevert(request);
   }
 

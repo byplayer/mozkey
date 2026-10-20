@@ -333,6 +333,66 @@ TEST_F(TableTest, InvalidEntryTest) {
   }
 }
 
+TEST_F(TableTest, CustomPunctuationSymbolAttributesSurviveOverrides) {
+  // A short rule can coexist with longer prefix-matching rules.  Rewriting
+  // punctuation/symbol output must not discard DisplayAmbiguousResult.
+  config_.set_custom_roman_table(
+      ".\t。\t\tDisplayAmbiguousResult\n"
+      "..\t。。\t\tDisplayAmbiguousResult\n"
+      "...\t…\t\tDisplayAmbiguousResult\n"
+      ",\t、\t\tDisplayAmbiguousResult EndChunk\n"
+      ",,\t、、\t\tDisplayAmbiguousResult\n"
+      "/\t・\t\tDisplayAmbiguousResult\n"
+      "//\t・・\t\tDisplayAmbiguousResult\n"
+      "[\t「\t\tDisplayAmbiguousResult\n"
+      "[[\t『\t\tDisplayAmbiguousResult\n"
+      "]\t」\t\tDisplayAmbiguousResult\n"
+      "]]\t』\t\tDisplayAmbiguousResult\n");
+
+  struct TestCase {
+    Config::PunctuationMethod punctuation;
+    Config::SymbolMethod symbol;
+    absl::string_view dot;
+    absl::string_view comma;
+    absl::string_view slash;
+    absl::string_view open;
+    absl::string_view close;
+  };
+  constexpr TestCase cases[] = {
+      {Config::TOUTEN_KUTEN, Config::CORNER_BRACKET_MIDDLE_DOT,
+       "。", "、", "・", "「", "」"},
+      {Config::COMMA_PERIOD, Config::SQUARE_BRACKET_SLASH,
+       "．", "，", "／", "[", "]"},
+      {Config::COMMA_KUTEN, Config::CORNER_BRACKET_SLASH,
+       "。", "，", "／", "「", "」"},
+      {Config::TOUTEN_PERIOD, Config::SQUARE_BRACKET_MIDDLE_DOT,
+       "．", "、", "・", "[", "]"},
+  };
+
+  commands::Request request;
+  for (const auto& test : cases) {
+    config_.set_punctuation_method(test.punctuation);
+    config_.set_symbol_method(test.symbol);
+    Table table;
+    ASSERT_TRUE(table.InitializeWithRequestAndConfig(request, config_));
+
+    const absl::string_view keys[] = {
+        ".", ",", "/", "[", "]", "..", "...", ",,", "//", "[[", "]]"};
+    const absl::string_view expected[] = {
+        test.dot, test.comma, test.slash, test.open, test.close,
+        "。。", "…", "、、", "・・", "『", "』"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+      const Entry* entry = table.LookUp(keys[i]);
+      ASSERT_NE(entry, nullptr) << keys[i];
+      EXPECT_EQ(entry->result(), expected[i]) << keys[i];
+      const TableAttributes expected_attributes =
+          keys[i] == "," ? (DISPLAY_AMBIGUOUS_RESULT | END_CHUNK)
+                         : DISPLAY_AMBIGUOUS_RESULT;
+      EXPECT_EQ(entry->attributes(), expected_attributes) << keys[i];
+    }
+  }
+}
+
 TEST_F(TableTest, CustomPunctuationsAndSymbols) {
   // Test against Issue2465801.
   std::string custom_roman_table;

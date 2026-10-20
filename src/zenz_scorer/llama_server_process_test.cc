@@ -1,6 +1,8 @@
 #include "zenz_scorer/llama_server_process.h"
 
 #include <cerrno>
+#include <chrono>
+#include <thread>
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
@@ -37,6 +39,16 @@ std::string TestHelperPath() {
   }
   return JoinPath(JoinPath(test_srcdir, test_workspace),
                   "zenz_scorer/llama_server_process_test_helper");
+}
+
+std::string GuardPath() {
+  const char* test_srcdir = std::getenv("TEST_SRCDIR");
+  const char* test_workspace = std::getenv("TEST_WORKSPACE");
+  if (test_srcdir == nullptr || test_workspace == nullptr) {
+    return "";
+  }
+  return JoinPath(JoinPath(test_srcdir, test_workspace),
+                  "zenz_scorer/mozc_zenz_guard");
 }
 
 class TemporaryModel final {
@@ -78,6 +90,7 @@ bool IsLowerHex(std::string_view value) {
 LlamaServerProcessOptions MakeOptions(const std::string& model_path) {
   LlamaServerProcessOptions options;
   options.executable_path = TestHelperPath();
+  options.guard_executable_path = GuardPath();
   options.model_path = model_path;
   options.context_size = 128;
   options.threads = 2;
@@ -203,6 +216,109 @@ TEST(LlamaServerProcessTest, CapturesBoundedRedactedStartupOutput) {
   EXPECT_FALSE(process.running());
 }
 
+TEST(LlamaServerProcessTest, GuardOwnsWorkerAndEscalatesTermIgnoringWorker) {
+  TemporaryModel model;
+  ASSERT_FALSE(model.path().empty());
+  LlamaServerProcessOptions options = MakeOptions(model.path());
+  options.additional_args = {"--test-mode=ignore-term"};
+  LlamaServerProcess process(std::move(options));
+  std::string error;
+  ASSERT_TRUE(process.Start(&error)) << error;
+  ASSERT_GT(process.pid(), 0);
+  ASSERT_GT(process.worker_pid(), 0);
+  EXPECT_NE(process.pid(), process.worker_pid());
+  const pid_t worker_pid = process.worker_pid();
+  const auto started = std::chrono::steady_clock::now();
+  process.Stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - started,
+            std::chrono::seconds(5));
+  EXPECT_EQ(process.worker_pid(), -1);
+  EXPECT_EQ(::kill(worker_pid, 0), -1);
+  EXPECT_EQ(errno, ESRCH);
+}
+
+TEST(LlamaServerProcessTest, ParentSigkillCausesGuardToReapWorker) {
+  TemporaryModel model;
+  ASSERT_FALSE(model.path().empty());
+  int fds[2] = {-1, -1};
+  ASSERT_EQ(::pipe(fds), 0);
+  const pid_t owner = ::fork();
+  ASSERT_GE(owner, 0);
+  if (owner == 0) {
+    ::close(fds[0]);
+    LlamaServerProcess process(MakeOptions(model.path()));
+    std::string error;
+    const pid_t worker = process.Start(&error) ? process.worker_pid() : -1;
+    const ssize_t ignored = ::write(fds[1], &worker, sizeof(worker));
+    static_cast<void>(ignored);
+    ::close(fds[1]);
+    if (worker <= 0) {
+      ::_exit(3);
+    }
+    while (true) {
+      ::pause();
+    }
+  }
+  ::close(fds[1]);
+  pid_t worker = -1;
+  const ssize_t got = ::read(fds[0], &worker, sizeof(worker));
+  ::close(fds[0]);
+  // The only SIGKILL in this test targets the owner created by this test.
+  ::kill(owner, SIGKILL);
+  int owner_status = 0;
+  ASSERT_EQ(::waitpid(owner, &owner_status, 0), owner);
+  ASSERT_EQ(got, sizeof(worker));
+  ASSERT_GT(worker, 0);
+  bool exited = false;
+  for (int i = 0; i < 120; ++i) {
+    if (::kill(worker, 0) == -1 && errno == ESRCH) {
+      exited = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  EXPECT_TRUE(exited) << "worker was not reaped after owner SIGKILL";
+}
+
+TEST(LlamaServerProcessTest, GuardSigkillCausesWorkerToExit) {
+  TemporaryModel model;
+  ASSERT_FALSE(model.path().empty());
+
+  LlamaServerProcess process(MakeOptions(model.path()));
+  std::string error;
+  ASSERT_TRUE(process.Start(&error)) << error;
+  const pid_t guard_pid = process.pid();
+  const pid_t worker_pid = process.worker_pid();
+  ASSERT_GT(guard_pid, 0);
+  ASSERT_GT(worker_pid, 0);
+  ASSERT_NE(guard_pid, worker_pid);
+
+  // Kill only the guard started by this test; the scorer remains alive.
+  ASSERT_EQ(::kill(guard_pid, SIGKILL), 0);
+  bool worker_exited = false;
+  for (int i = 0; i < 120; ++i) {
+    if (::kill(worker_pid, 0) == -1 && errno == ESRCH) {
+      worker_exited = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  process.Stop();  // Reap the killed guard; do not kill any process by name.
+  EXPECT_TRUE(worker_exited)
+      << "worker survived guard SIGKILL despite FD24 lifetime EOF";
+}
+
+TEST(LlamaServerProcessTest, RejectsKeyOverrideArgument) {
+  TemporaryModel model;
+  ASSERT_FALSE(model.path().empty());
+  LlamaServerProcessOptions options = MakeOptions(model.path());
+  options.additional_args = {"--api-key", "not-allowed"};
+  LlamaServerProcess process(std::move(options));
+  std::string error;
+  EXPECT_FALSE(process.Start(&error));
+  EXPECT_EQ(error, "api_key_override_rejected");
+}
+
 TEST(LlamaServerProcessTest, RejectsMissingRuntimeFiles) {
   TemporaryModel model;
   ASSERT_FALSE(model.path().empty());
@@ -213,6 +329,12 @@ TEST(LlamaServerProcessTest, RejectsMissingRuntimeFiles) {
   std::string error;
   EXPECT_FALSE(first.Start(&error));
   EXPECT_EQ(error, "llama_server_not_found");
+
+  LlamaServerProcessOptions missing_guard = MakeOptions(model.path());
+  missing_guard.guard_executable_path = "/missing/mozc_zenz_guard";
+  LlamaServerProcess third(std::move(missing_guard));
+  EXPECT_FALSE(third.Start(&error));
+  EXPECT_EQ(error, "guard_llama_server_not_found");
 
   LlamaServerProcessOptions missing_model = MakeOptions("/missing/model.gguf");
   LlamaServerProcess second(std::move(missing_model));

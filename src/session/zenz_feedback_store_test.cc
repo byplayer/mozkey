@@ -214,6 +214,23 @@ TEST(ZenzFeedbackStoreTest, GetAcceptedCandidatesAllowsSingleAcceptedAndSorts) {
   EXPECT_EQ(candidates[3].reason, "feedback_preferred");
 }
 
+TEST(ZenzFeedbackStoreTest,
+     ManualHardRejectBypassesAutomaticLengthAndRespectsContext) {
+  ScopedUserProfileForZenzFeedbackStoreTest profile;
+  ASSERT_TRUE(profile.ok());
+  ZenzFeedbackStore store;
+  store.RecordRejected("あい", "japanese_only", "亜衣", "hard_reject");
+  store.RecordRejected("あい", "sensitive_like", "愛", "hard_reject");
+  store.RecordRejected("あい", "empty", "藍", "space_revert_zenz_to_mozc");
+
+  EXPECT_TRUE(store.IsManuallyBlocked("あい", "empty", "亜衣"));
+  EXPECT_TRUE(store.IsManuallyBlocked("あい", "japanese_only", "亜衣"));
+  EXPECT_FALSE(store.IsManuallyBlocked("あい", "empty", "愛"));
+  EXPECT_TRUE(store.IsManuallyBlocked("あい", "sensitive_like", "愛"));
+  EXPECT_FALSE(store.IsManuallyBlocked("あい", "empty", "藍"));
+  EXPECT_FALSE(store.IsManuallyBlocked("あい", "empty", "青"));
+}
+
 TEST(ZenzFeedbackStoreTest, DecideTreatsOrdinaryRejectedAsSoftSignal) {
   ScopedUserProfileForZenzFeedbackStoreTest profile;
   ASSERT_TRUE(profile.ok());
@@ -722,6 +739,36 @@ TEST(ZenzFeedbackStoreTest,
   EXPECT_EQ(entries[0].rejected_count, 1);
 }
 
+TEST(ZenzFeedbackStoreTest, AcceptedAppendReportsSuccessAndValidationFailure) {
+  ScopedUserProfileForZenzFeedbackStoreTest profile;
+  ASSERT_TRUE(profile.ok());
+  ZenzFeedbackStore store;
+  EXPECT_TRUE(store.RecordAccepted("k", "empty", "v"));
+  // An unsafe record cannot be appended or later compensated.
+  EXPECT_FALSE(store.RecordAccepted("bad\nkey", "empty", "v"));
+  const ZenzFeedbackDecision decision = store.Decide("k", "empty", "v");
+  EXPECT_EQ(decision.accepted_count, 1);
+}
+
+#if defined(_WIN32)
+TEST(ZenzFeedbackStoreTest, AcceptedAppendReportsExclusiveFileLockFailure) {
+  ScopedUserProfileForZenzFeedbackStoreTest profile;
+  ASSERT_TRUE(profile.ok());
+  ZenzFeedbackStore store;
+  ASSERT_TRUE(store.RecordAccepted("k", "empty", "v"));
+
+  const std::wstring path = profile.feedback_path();
+  HANDLE lock = ::CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_NE(lock, INVALID_HANDLE_VALUE);
+  EXPECT_FALSE(store.RecordAccepted("k", "empty", "v"));
+  ::CloseHandle(lock);
+
+  const ZenzFeedbackDecision decision = store.Decide("k", "empty", "v");
+  EXPECT_EQ(decision.accepted_count, 1);
+}
+#endif  // _WIN32
+
 TEST(ZenzFeedbackStoreTest, AcceptedRollbackCancelsOnlyOneAcceptedObservation) {
   ScopedUserProfileForZenzFeedbackStoreTest profile;
   ASSERT_TRUE(profile.ok());
@@ -910,6 +957,106 @@ TEST(ZenzFeedbackStoreTest, ImportRejectsMalformedFileWithoutChangingExisting) {
   EXPECT_EQ(entries[0].value, "既存");
   EXPECT_EQ(entries[0].accepted_count, 1);
   EXPECT_EQ(entries[0].rejected_count, 0);
+}
+
+TEST(ZenzFeedbackStoreTest, MinimumKeyLengthExcludesAutomaticButRecordsRemain) {
+  ScopedUserProfileForZenzFeedbackStoreTest profile;
+  ASSERT_TRUE(profile.ok());
+
+  ZenzFeedbackStore store;
+  store.RecordAccepted("はし", "japanese_only", "橋");
+  store.RecordRejected("はし", "japanese_only", "橋",
+                       "space_revert_zenz_to_mozc");
+  store.RecordAccepted("おねがいします", "empty", "お願いします");
+
+  ZenzFeedbackReusePolicy policy;
+  policy.minimum_key_length_enabled = true;
+  policy.minimum_key_length = 7;
+  policy.auto_block_policy.enabled = true;
+  policy.auto_block_policy.minimum_reject_count = 1;
+  policy.auto_block_policy.minimum_reject_percentage = 50;
+
+  const auto short_decision = store.Decide("はし", "japanese_only", "橋", policy);
+  EXPECT_EQ(short_decision.action, ZenzFeedbackAction::kNeutral);
+  EXPECT_EQ(short_decision.reason, "feedback_key_length_excluded");
+  EXPECT_EQ(short_decision.accepted_count, 1);
+  EXPECT_EQ(short_decision.rejected_count, 1);
+  EXPECT_FALSE(short_decision.auto_blocked);
+  EXPECT_TRUE(store.GetRankedCandidates("はし", "empty", policy).empty());
+  EXPECT_TRUE(store.GetAcceptedCandidates("はし", "empty", policy).empty());
+
+  const auto long_decision = store.Decide("おねがいします", "empty",
+                                          "お願いします", policy);
+  EXPECT_EQ(long_decision.action, ZenzFeedbackAction::kPrefer);
+  EXPECT_EQ(store.GetRankedCandidates("おねがいします", "empty", policy).size(), 1);
+
+  const auto entries = store.ListEntries(policy);
+  ASSERT_EQ(entries.size(), 2);
+  for (const auto& entry : entries) {
+    EXPECT_EQ(entry.reuse_excluded, entry.key == "はし");
+  }
+}
+
+TEST(ZenzFeedbackStoreTest, MinimumKeyLengthBoundarySixAndSeven) {
+  ScopedUserProfileForZenzFeedbackStoreTest profile;
+  ASSERT_TRUE(profile.ok());
+
+  ZenzFeedbackStore store;
+  // Both keys are Unicode kana strings; this must not count UTF-8 bytes.
+  store.RecordAccepted("あしたはあめ", "empty", "明日は雨");  // 6 chars
+  store.RecordAccepted("おねがいします", "empty", "お願いします");  // 7 chars
+
+  ZenzFeedbackReusePolicy policy;
+  policy.minimum_key_length_enabled = true;
+  policy.minimum_key_length = 7;
+
+  EXPECT_TRUE(store.GetRankedCandidates("あしたはあめ", "empty", policy).empty());
+  EXPECT_EQ(store.Decide("あしたはあめ", "empty", "明日は雨", policy).action,
+            ZenzFeedbackAction::kNeutral);
+  EXPECT_EQ(store.GetRankedCandidates("おねがいします", "empty", policy).size(),
+            1);
+  EXPECT_EQ(store.Decide("おねがいします", "empty", "お願いします", policy).action,
+            ZenzFeedbackAction::kPrefer);
+
+  // Changing settings immediately reactivates the same persisted observation.
+  policy.minimum_key_length = 6;
+  EXPECT_EQ(store.GetRankedCandidates("あしたはあめ", "empty", policy).size(), 1);
+}
+
+TEST(ZenzFeedbackStoreTest, ManualHardRejectOverridesMinimumKeyLength) {
+  ScopedUserProfileForZenzFeedbackStoreTest profile;
+  ASSERT_TRUE(profile.ok());
+  ZenzFeedbackStore store;
+  store.RecordAccepted("はし", "empty", "橋");
+  store.RecordRejected("はし", "empty", "橋", "hard_reject");
+
+  ZenzFeedbackReusePolicy policy;
+  policy.minimum_key_length_enabled = true;
+  policy.minimum_key_length = 7;
+  const auto decision = store.Decide("はし", "empty", "橋", policy);
+  EXPECT_TRUE(decision.hard_rejected);
+  EXPECT_EQ(decision.action, ZenzFeedbackAction::kReject);
+  EXPECT_EQ(decision.reason, "feedback_hard_rejected");
+  EXPECT_TRUE(store.GetRankedCandidates("はし", "empty", policy).empty());
+  const auto entries = store.ListEntries(policy);
+  ASSERT_EQ(entries.size(), 1);
+  EXPECT_FALSE(entries[0].reuse_excluded);
+}
+
+TEST(ZenzFeedbackStoreTest, ThresholdCanBeDisabledOrChangedWithoutDataLoss) {
+  ScopedUserProfileForZenzFeedbackStoreTest profile;
+  ASSERT_TRUE(profile.ok());
+  ZenzFeedbackStore store;
+  store.RecordAccepted("はし", "empty", "橋");
+  ZenzFeedbackReusePolicy policy;
+  policy.minimum_key_length_enabled = true;
+  policy.minimum_key_length = 7;
+  EXPECT_TRUE(store.GetRankedCandidates("はし", "empty", policy).empty());
+  policy.minimum_key_length = 2;
+  EXPECT_EQ(store.GetRankedCandidates("はし", "empty", policy).size(), 1);
+  policy.minimum_key_length = 7;
+  policy.minimum_key_length_enabled = false;
+  EXPECT_EQ(store.GetRankedCandidates("はし", "empty", policy).size(), 1);
 }
 
 #else  // defined(_WIN32) || defined(__APPLE__)

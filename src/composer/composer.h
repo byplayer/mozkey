@@ -77,6 +77,12 @@ class ComposerData {
 
   transliteration::TransliterationType GetInputMode() const;
 
+  // Returns the input field type captured when ComposerData was created.
+  // This is authoritative even if commands::Context omits input_field_type.
+  commands::Context::InputFieldType GetInputFieldType() const {
+    return input_field_type_;
+  }
+
   // Returns a preedit string with user's preferences.
   std::string GetStringForPreedit() const;
 

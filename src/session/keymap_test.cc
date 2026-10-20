@@ -62,6 +62,7 @@ class KeyMapManagerTestPeer : public testing::TestPeer<KeyMapManager> {
       : testing::TestPeer<KeyMapManager>(manager) {}
 
   PEER_METHOD(AddCommand);
+  PEER_METHOD(Reset);
   PEER_METHOD(LoadStream);
   PEER_METHOD(LoadStreamWithErrors);
   PEER_METHOD(ParseCommandDirect);
@@ -235,6 +236,228 @@ TEST_F(KeyMapTest, AddCommandSequence) {
   EXPECT_EQ(sequence[0], "Convert");
   EXPECT_EQ(sequence[1], "ConvertNext");
   EXPECT_EQ(sequence[2], "Commit");
+}
+
+TEST_F(KeyMapTest, ZenzManualCommandAndDelayGrammar) {
+  KeyMapManager manager;
+  KeyMapManagerTestPeer peer(manager);
+
+  EXPECT_TRUE(peer.AddCommand(
+      "Precomposition", "Ctrl Shift Space",
+      "ReconvertSelectionOrInsertSpace|Delay(700)|ForceZenzLiveCorrection"));
+  EXPECT_TRUE(peer.AddCommand(
+      "Composition", "Ctrl Shift Enter",
+      "ForceZenzLiveCorrection"));
+  EXPECT_TRUE(peer.AddCommand(
+      "Conversion", "Ctrl Shift Enter",
+      "ForceZenzLiveCorrection"));
+  EXPECT_TRUE(peer.AddCommand(
+      "Composition", "Ctrl Shift Space",
+      "ForceZenzLiveCorrectionWithoutFeedback"));
+  EXPECT_TRUE(peer.AddCommand(
+      "Conversion", "Ctrl Shift Space",
+      "ForceZenzLiveCorrectionWithoutFeedback"));
+
+  commands::KeyEvent key;
+  ASSERT_TRUE(KeyParser::ParseKey("Ctrl Shift Space", &key));
+  CommandSequence seq;
+  ASSERT_TRUE(manager.GetCommandSequencePrecomposition(key, &seq));
+  ASSERT_EQ(seq.size(), 3);
+  EXPECT_EQ(seq[1], "Delay(700)");
+  EXPECT_EQ(seq[2], "ForceZenzLiveCorrection");
+
+  EXPECT_FALSE(peer.AddCommand("Composition", "Ctrl Enter",
+                               "Convert|Delay(-1)|Commit"));
+  EXPECT_FALSE(peer.AddCommand("Composition", "Ctrl Enter",
+                               "Convert|Delay(5001)|Commit"));
+  EXPECT_FALSE(peer.AddCommand("Composition", "Ctrl Enter",
+                               "Convert|Delay(2.85)|Commit"));
+  EXPECT_TRUE(peer.AddCommand("Composition", "Ctrl Enter",
+                              "Convert|Delay(0)|Commit"));
+  EXPECT_TRUE(peer.AddCommand("Composition", "Ctrl Enter",
+                              "Convert|Delay(5000)|Commit"));
+  EXPECT_FALSE(peer.AddCommand("Composition", "Ctrl Shift F11",
+                                "ForceZenzLiveCorrection|Delay(700)|Commit"));
+  EXPECT_FALSE(peer.AddCommand("Conversion", "Ctrl Shift F11",
+                                "ConvertNext|ForceZenzLiveCorrection|Commit"));
+  EXPECT_FALSE(peer.AddCommand(
+      "Conversion", "Ctrl Shift F11",
+      "ConvertNext|ForceZenzLiveCorrectionWithoutFeedback|Commit"));
+  EXPECT_TRUE(peer.AddCommand("Composition", "Ctrl Shift F11",
+                               "Convert|Delay(700)|ForceZenzLiveCorrection"));
+  EXPECT_FALSE(peer.AddCommand("Composition", "Ctrl Enter",
+                               "Delay(700)|Commit"));
+}
+
+TEST_F(KeyMapTest, ZenzConversionOverridesAndInheritsConversion) {
+  KeyMapManager manager;
+  KeyMapManagerTestPeer peer(manager);
+  EXPECT_TRUE(peer.AddCommand("Conversion", "Space", "ConvertNext"));
+  EXPECT_TRUE(peer.AddCommand("Conversion", "Ctrl Enter", "Commit"));
+  EXPECT_TRUE(peer.AddCommand("ZenzConversion", "Space", "RevertZenzToMozc"));
+  EXPECT_FALSE(peer.AddCommand("UnknownZenzState", "Space", "Commit"));
+  EXPECT_FALSE(peer.AddCommand("ZenzConversion", "Space", "NoSuchCommand"));
+  EXPECT_FALSE(peer.AddCommand("ZenzConversion", "Alt Space",
+                               "RevertZenzToMozc|IMEOff"));
+
+  commands::KeyEvent space;
+  ASSERT_TRUE(KeyParser::ParseKey("Space", &space));
+  CommandSequence sequence;
+  ASSERT_TRUE(manager.GetCommandSequenceConversion(space, &sequence));
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence[0], "ConvertNext");
+
+  ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(space, &sequence));
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence[0], "RevertZenzToMozc");
+
+  commands::KeyEvent enter;
+  ASSERT_TRUE(KeyParser::ParseKey("Ctrl Enter", &enter));
+  ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(enter, &sequence));
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence[0], "Commit");
+}
+
+TEST_F(KeyMapTest, LiveAndZenzConversionPrecedenceAndFallback) {
+  KeyMapManager manager;
+  KeyMapManagerTestPeer peer(manager);
+  peer.Reset();
+  EXPECT_TRUE(peer.AddCommand("Conversion", "Backspace", "Cancel"));
+  EXPECT_TRUE(peer.AddCommand("Conversion", "Ctrl Enter", "Commit"));
+  EXPECT_TRUE(peer.AddCommand("LiveConversion", "Backspace", "Backspace"));
+  EXPECT_TRUE(peer.AddCommand("ZenzConversion", "Backspace", "IMEOff"));
+
+  commands::KeyEvent key;
+  ASSERT_TRUE(KeyParser::ParseKey("Backspace", &key));
+  CommandSequence sequence;
+  bool specialized = false;
+  ASSERT_TRUE(manager.GetCommandSequenceLiveConversion(key, &sequence,
+                                                       &specialized));
+  EXPECT_TRUE(specialized);
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence[0], "Backspace");
+
+  ASSERT_TRUE(manager.GetCommandSequenceZenzLiveConversion(
+      key, &sequence, &specialized));
+  EXPECT_TRUE(specialized);
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence[0], "IMEOff");
+
+  key.Clear();
+  ASSERT_TRUE(KeyParser::ParseKey("Ctrl Enter", &key));
+  ASSERT_TRUE(manager.GetCommandSequenceZenzLiveConversion(
+      key, &sequence, &specialized));
+  EXPECT_FALSE(specialized);
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence[0], "Commit");
+
+  EXPECT_FALSE(peer.AddCommand("LiveConverion", "Space", "ConvertNext"));
+}
+
+TEST_F(KeyMapTest, ZenzLiveInheritsLiveWhileManualZenzInheritsOrdinary) {
+  KeyMapManager manager;
+  KeyMapManagerTestPeer peer(manager);
+  peer.Reset();
+  EXPECT_TRUE(peer.AddCommand("Conversion", "Backspace", "Cancel"));
+  EXPECT_TRUE(peer.AddCommand("LiveConversion", "Backspace", "Backspace"));
+  commands::KeyEvent key;
+  ASSERT_TRUE(KeyParser::ParseKey("Backspace", &key));
+  CommandSequence sequence;
+  bool specialized = false;
+  ASSERT_TRUE(manager.GetCommandSequenceZenzLiveConversion(
+      key, &sequence, &specialized));
+  EXPECT_TRUE(specialized);
+  EXPECT_EQ(sequence.front(), "Backspace");
+  ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(
+      key, &sequence, &specialized));
+  EXPECT_FALSE(specialized);
+  EXPECT_EQ(sequence.front(), "Cancel");
+}
+
+TEST_F(KeyMapTest, BuiltinKeymapsExplicitlyBindZenzSpaceRevert) {
+  commands::KeyEvent space;
+  ASSERT_TRUE(KeyParser::ParseKey("Space", &space));
+  for (const config::Config::SessionKeymap kind :
+       {config::Config::ATOK, config::Config::MSIME, config::Config::KOTOERI,
+        config::Config::MOBILE, config::Config::CHROMEOS}) {
+    KeyMapManager manager(GetDefaultConfig(kind));
+    CommandSequence ordinary;
+    ASSERT_TRUE(manager.GetCommandSequenceConversion(space, &ordinary));
+    ASSERT_EQ(ordinary.size(), 1);
+    EXPECT_EQ(ordinary.front(), "ConvertNext");
+
+    CommandSequence zenz;
+    ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(space, &zenz));
+    ASSERT_EQ(zenz.size(), 1);
+    EXPECT_EQ(zenz.front(), "RevertZenzToMozc");
+  }
+}
+
+TEST_F(KeyMapTest, BuiltinKeymapsInheritZenzBackspaceFromOrigin) {
+  commands::KeyEvent backspace;
+  ASSERT_TRUE(KeyParser::ParseKey("Backspace", &backspace));
+  for (const config::Config::SessionKeymap kind :
+       {config::Config::ATOK, config::Config::MSIME, config::Config::KOTOERI,
+        config::Config::MOBILE, config::Config::CHROMEOS}) {
+    KeyMapManager manager(GetDefaultConfig(kind));
+    CommandSequence ordinary;
+    ASSERT_TRUE(manager.GetCommandSequenceConversion(backspace, &ordinary));
+    EXPECT_EQ(ordinary.front(), "Cancel");
+    CommandSequence live;
+    ASSERT_TRUE(manager.GetCommandSequenceLiveConversion(backspace, &live));
+    EXPECT_EQ(live.front(), "Backspace");
+    CommandSequence zenz;
+    bool specialized = true;
+    ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(
+        backspace, &zenz, &specialized));
+    EXPECT_FALSE(specialized);
+    EXPECT_EQ(zenz.front(), "Cancel");
+    ASSERT_TRUE(manager.GetCommandSequenceZenzLiveConversion(
+        backspace, &zenz, &specialized));
+    EXPECT_TRUE(specialized);
+    EXPECT_EQ(zenz.front(), "Backspace");
+  }
+}
+
+TEST_F(KeyMapTest, ZenzConversionBackspaceCommandAndOverrideFlag) {
+  KeyMapManager manager;
+  KeyMapManagerTestPeer peer(manager);
+  // Start from a known-empty keymap; platform defaults can bind Ctrl Enter.
+  peer.Reset();
+  EXPECT_TRUE(peer.AddCommand("Conversion", "Backspace", "Cancel"));
+  EXPECT_TRUE(peer.AddCommand("ZenzConversion", "Space", "Backspace"));
+  EXPECT_TRUE(peer.AddCommand("ZenzConversion", "Backspace", "Commit"));
+
+  commands::KeyEvent key;
+  CommandSequence sequence;
+  bool overridden = false;
+  ASSERT_TRUE(KeyParser::ParseKey("Space", &key));
+  ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(key, &sequence,
+                                                       &overridden));
+  EXPECT_TRUE(overridden);
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence.front(), "Backspace");
+
+  key.Clear();
+  ASSERT_TRUE(KeyParser::ParseKey("Backspace", &key));
+  ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(key, &sequence,
+                                                       &overridden));
+  EXPECT_TRUE(overridden);
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence.front(), "Commit");
+
+  key.Clear();
+  ASSERT_TRUE(KeyParser::ParseKey("Ctrl Enter", &key));
+  EXPECT_FALSE(manager.GetCommandSequenceZenzConversion(key, &sequence,
+                                                        &overridden));
+  EXPECT_FALSE(overridden);
+
+  EXPECT_TRUE(peer.AddCommand("Conversion", "Ctrl Enter", "Commit"));
+  ASSERT_TRUE(manager.GetCommandSequenceZenzConversion(key, &sequence,
+                                                       &overridden));
+  EXPECT_FALSE(overridden);
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence.front(), "Commit");
 }
 
 TEST_F(KeyMapTest, AddCommandSequenceRejectsInvalidFirstCommand) {
@@ -1317,6 +1540,174 @@ TEST_F(KeyMapTest, AddCommand) {
     EXPECT_FALSE(manager_peer.AddCommand("Composition", kKeyEvent, "Unknown"));
     EXPECT_FALSE(manager_peer.AddCommand("Composition", "INVALID", "Cancel"));
   }
+}
+
+TEST_F(KeyMapTest, ModifierSidesCanBeGenericizedIndependently) {
+  KeyMap<PrecompositionState> keymap;
+
+  commands::KeyEvent binding;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftCtrl Shift", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_OFF));
+
+  PrecompositionState::Commands command;
+
+  commands::KeyEvent left_left;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftCtrl LeftShift", &left_left));
+  EXPECT_TRUE(keymap.GetCommand(left_left, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
+
+  commands::KeyEvent left_right;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftCtrl RightShift", &left_right));
+  EXPECT_TRUE(keymap.GetCommand(left_right, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
+
+  commands::KeyEvent right_left;
+  ASSERT_TRUE(KeyParser::ParseKey("RightCtrl LeftShift", &right_left));
+  EXPECT_FALSE(keymap.GetCommand(right_left, &command));
+}
+
+TEST_F(KeyMapTest, GenericModifierOnlyBindingMatchesEitherSide) {
+  KeyMap<PrecompositionState> keymap;
+
+  commands::KeyEvent binding;
+  ASSERT_TRUE(KeyParser::ParseKey("Ctrl", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_OFF));
+
+  PrecompositionState::Commands command;
+
+  commands::KeyEvent left_ctrl;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftCtrl", &left_ctrl));
+  EXPECT_TRUE(keymap.GetCommand(left_ctrl, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
+
+  commands::KeyEvent right_ctrl;
+  ASSERT_TRUE(KeyParser::ParseKey("RightCtrl", &right_ctrl));
+  EXPECT_TRUE(keymap.GetCommand(right_ctrl, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
+}
+
+TEST_F(KeyMapTest, ExplicitGenericCompositionShiftOverridesFallback) {
+  config::Config config;
+  config.set_session_keymap(config::Config::CUSTOM);
+  config.set_custom_keymap_table(
+      "status\tkey\tcommand\n"
+      "Composition\tShift\tIMEOff\n");
+  KeyMapManager manager(config);
+
+  commands::KeyEvent shift;
+  ASSERT_TRUE(KeyParser::ParseKey("Shift", &shift));
+  CompositionState::Commands command = CompositionState::NONE;
+  ASSERT_TRUE(manager.GetCommandComposition(shift, &command));
+  EXPECT_EQ(command, CompositionState::IME_OFF);
+
+  commands::KeyEvent left_shift;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftShift", &left_shift));
+  ASSERT_TRUE(manager.GetCommandComposition(left_shift, &command));
+  EXPECT_EQ(command, CompositionState::IME_OFF);
+}
+
+TEST_F(KeyMapTest, CompositionShiftFallbackStillAppliesWhenNotConfigured) {
+  config::Config config;
+  config.set_session_keymap(config::Config::CUSTOM);
+  config.set_custom_keymap_table(
+      "status\tkey\tcommand\n"
+      "Precomposition\tCtrl y\tIMEOff\n");
+  KeyMapManager manager(config);
+
+  commands::KeyEvent shift;
+  ASSERT_TRUE(KeyParser::ParseKey("Shift", &shift));
+  CompositionState::Commands command = CompositionState::NONE;
+  ASSERT_TRUE(manager.GetCommandComposition(shift, &command));
+  EXPECT_EQ(command, CompositionState::INSERT_CHARACTER);
+}
+
+TEST_F(KeyMapTest, SpecificCompositionShiftKeepsGenericFallback) {
+  config::Config config;
+  config.set_session_keymap(config::Config::CUSTOM);
+  config.set_custom_keymap_table(
+      "status\tkey\tcommand\n"
+      "Composition\tLeftShift\tIMEOff\n");
+  KeyMapManager manager(config);
+
+  commands::KeyEvent left_shift;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftShift", &left_shift));
+  CompositionState::Commands command = CompositionState::NONE;
+  ASSERT_TRUE(manager.GetCommandComposition(left_shift, &command));
+  EXPECT_EQ(command, CompositionState::IME_OFF);
+
+  commands::KeyEvent right_shift;
+  ASSERT_TRUE(KeyParser::ParseKey("RightShift", &right_shift));
+  ASSERT_TRUE(manager.GetCommandComposition(right_shift, &command));
+  EXPECT_EQ(command, CompositionState::INSERT_CHARACTER);
+}
+
+TEST_F(KeyMapTest, CapsGenericBindingPrecedesPlainSideSpecific) {
+  KeyMap<PrecompositionState> keymap;
+  commands::KeyEvent binding;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftCtrl Delete", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_ON));
+  ASSERT_TRUE(KeyParser::ParseKey("Ctrl Delete", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::INSERT_SPACE));
+  ASSERT_TRUE(KeyParser::ParseKey("Caps Ctrl Delete", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_OFF));
+
+  commands::KeyEvent pressed;
+  ASSERT_TRUE(KeyParser::ParseKey("Caps LeftCtrl Delete", &pressed));
+  PrecompositionState::Commands command = PrecompositionState::NONE;
+  ASSERT_TRUE(keymap.GetCommand(pressed, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
+
+  ASSERT_TRUE(KeyParser::ParseKey("Caps RightCtrl Delete", &pressed));
+  ASSERT_TRUE(keymap.GetCommand(pressed, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
+
+  ASSERT_TRUE(KeyParser::ParseKey("Caps LeftCtrl Delete", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::REVERT));
+  ASSERT_TRUE(keymap.GetCommand(pressed, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
+  ASSERT_TRUE(KeyParser::ParseKey("Caps LeftCtrl Delete", &pressed));
+  ASSERT_TRUE(keymap.GetCommand(pressed, &command));
+  EXPECT_EQ(command, PrecompositionState::REVERT);
+
+  ASSERT_TRUE(KeyParser::ParseKey("LeftCtrl Delete", &pressed));
+  ASSERT_TRUE(keymap.GetCommand(pressed, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_ON);
+}
+
+TEST_F(KeyMapTest, CapsGenericSequencePrecedesPlainSideSpecificSequence) {
+  KeyMap<PrecompositionState> keymap;
+  commands::KeyEvent binding;
+  ASSERT_TRUE(KeyParser::ParseKey("LeftCtrl Delete", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_ON,
+                             CommandSequence{"IMEOn"}));
+  ASSERT_TRUE(KeyParser::ParseKey("Caps Ctrl Delete", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_OFF,
+                             CommandSequence{"IMEOff"}));
+
+  commands::KeyEvent pressed;
+  ASSERT_TRUE(KeyParser::ParseKey("Caps LeftCtrl Delete", &pressed));
+  CommandSequence actual;
+  ASSERT_TRUE(keymap.GetCommandSequence(pressed, &actual));
+  ASSERT_EQ(actual.size(), 1);
+  EXPECT_EQ(actual[0], "IMEOff");
+}
+
+TEST_F(KeyMapTest, CapsCaseFlipFallbackRemainsAvailable) {
+  KeyMap<PrecompositionState> keymap;
+  commands::KeyEvent binding;
+  ASSERT_TRUE(KeyParser::ParseKey("Ctrl A", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_ON));
+
+  commands::KeyEvent pressed;
+  ASSERT_TRUE(KeyParser::ParseKey("Caps LeftCtrl a", &pressed));
+  PrecompositionState::Commands command = PrecompositionState::NONE;
+  ASSERT_TRUE(keymap.GetCommand(pressed, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_ON);
+
+  ASSERT_TRUE(KeyParser::ParseKey("Caps Ctrl a", &binding));
+  ASSERT_TRUE(keymap.AddRule(binding, PrecompositionState::IME_OFF));
+  ASSERT_TRUE(keymap.GetCommand(pressed, &command));
+  EXPECT_EQ(command, PrecompositionState::IME_OFF);
 }
 
 TEST_F(KeyMapTest, ZeroQuerySuggestion) {

@@ -12,6 +12,8 @@ EXPECTED_LLAMA_TAG="b10268"
 EXPECTED_LLAMA_COMMIT="6b5224cfccdb9caf4c0a0a87692fddad22c7e969"
 EXPECTED_PATCH_SHA="6db5c11b2da8415d6b37200ec6aa4f3fdcdde8efb1e7a71375fe331a7b0e829a"
 EXPECTED_PATCHED_SOURCE_SHA="36d8d6db0603a511ea4a490a8f0da28e2054327e3d4fe9b9e1481a2150eb1317"
+EXPECTED_DUAL_LIVENESS_PATCH_SHA="3267e978f61456c32dfb83b15bf0f3a75393c5f98c946ee7a2846f7121b36dda"
+EXPECTED_PATCHED_LLAMA_MAIN_SHA="2197ffc83775b865b97b35528a99f1daa692cf25eb4e952509e46e2cfebbf976"
 EXPECTED_MODEL_REPOSITORY="Miwa-Keita/zenz-v3.2-small-gguf"
 EXPECTED_MODEL_REVISION="c67e03e07d215c869f591b274c1631170d3e11fe"
 EXPECTED_MODEL_SHA="29c223d4c23327b80fd13ebb5ab2555057a46317997d5da391584ffbef0db673"
@@ -205,6 +207,7 @@ app_exec="$app/Contents/MacOS/Mozc"
 runtime="$app/Contents/Resources/ZenzRuntime"
 llama="$runtime/llama-server"
 scorer="$runtime/mozc_zenz_scorer"
+guard="$runtime/mozc_zenz_guard"
 model="$runtime/models/zenz-v3.2-small-Q5_K_M.gguf"
 contract="$runtime/BUILD-CONTRACT.txt"
 license_dir="$runtime/licenses"
@@ -274,6 +277,7 @@ required_payload=(
   "$app_exec"
   "$llama"
   "$scorer"
+  "$guard"
   "$model"
   "$contract"
   "$license_dir/Apache-2.0.txt"
@@ -310,6 +314,12 @@ patch_sha="$(contract_value "$contract" zenz_patch_sha256)"
 patched_source_sha="$(
   contract_value "$contract" patched_llama_vocab_sha256
 )"
+dual_liveness_patch_sha="$(
+  contract_value "$contract" mozkey_dual_liveness_patch_sha256
+)"
+patched_llama_main_sha="$(
+  contract_value "$contract" patched_llama_server_main_sha256
+)"
 model_repository="$(
   contract_value "$contract" model_repository
 )"
@@ -342,6 +352,18 @@ signing="$(contract_value "$contract" signing)"
 
 [[ "$patched_source_sha" == "$EXPECTED_PATCHED_SOURCE_SHA" ]] ||
   die "Unexpected patched source identity"
+
+[[ "$dual_liveness_patch_sha" == "$EXPECTED_DUAL_LIVENESS_PATCH_SHA" ]] ||
+  die "Unexpected dual-liveness patch identity"
+
+[[ "$patched_llama_main_sha" == "$EXPECTED_PATCHED_LLAMA_MAIN_SHA" ]] ||
+  die "Unexpected patched llama-server main.cpp identity"
+
+[[ -f "$script_dir/patches/llama-server-mozkey-dual-liveness.patch" ]] ||
+  die "Dual-liveness patch missing from verifier source tree"
+
+[[ "$(sha256_file "$script_dir/patches/llama-server-mozkey-dual-liveness.patch")" == "$dual_liveness_patch_sha" ]] ||
+  die "Current dual-liveness patch differs from embedded BUILD-CONTRACT"
 
 [[ "$model_repository" == "$EXPECTED_MODEL_REPOSITORY" ]] ||
   die "Unexpected model repository"
@@ -407,9 +429,11 @@ echo "===== VERIFY UNIVERSAL EXECUTABLES ====="
 
 verify_universal "$app_exec" "Mozc"
 verify_universal "$scorer" "mozc_zenz_scorer"
+verify_universal "$guard" "mozc_zenz_guard"
 verify_universal "$llama" "llama-server"
 
 verify_system_only "$scorer" "mozc_zenz_scorer"
+verify_system_only "$guard" "mozc_zenz_guard"
 verify_system_only "$llama" "llama-server"
 
 echo "Runtime dynamic libraries = SYSTEM ONLY"
@@ -443,6 +467,18 @@ done
 
 echo "Tokenizer marker = PRESENT BOTH SLICES"
 
+# The packaged worker must carry the opt-in protocol in both slices, not
+# merely declare a BUILD-CONTRACT that was produced by a matching script.
+for thin in \
+  "$tmp_slices/llama.arm64" \
+  "$tmp_slices/llama.x86_64"; do
+  /usr/bin/strings "$thin" | /usr/bin/grep -F -- \
+    '--mozkey-zenz-dual-liveness-v1' >/dev/null ||
+    die "Dual-liveness worker marker missing: $thin"
+done
+
+echo "Dual-liveness worker marker = PRESENT BOTH SLICES"
+
 echo
 echo "===== VERIFY NESTED CODESIGN ====="
 
@@ -457,6 +493,12 @@ echo "===== VERIFY NESTED CODESIGN ====="
   --strict \
   --verbose=4 \
   "$scorer"
+
+/usr/bin/codesign \
+  --verify \
+  --strict \
+  --verbose=4 \
+  "$guard"
 
 /usr/bin/codesign \
   --verify \
@@ -561,11 +603,15 @@ echo "===== WRITE VERIFIER AUDIT ====="
   echo "Embedded BUILD-CONTRACT SHA256 = $(sha256_file "$contract")"
   echo "Embedded builder SHA256 = $contract_builder_sha"
   echo "Embedded unsigned runtime SHA256 = $unsigned_universal_sha"
+  echo "Dual-liveness patch SHA256 = $dual_liveness_patch_sha"
+  echo "Patched llama main SHA256 = $patched_llama_main_sha"
   echo "Final signed llama SHA256 = $(sha256_file "$llama")"
   echo "Final signed scorer SHA256 = $(sha256_file "$scorer")"
+  echo "Final signed guard SHA256 = $(sha256_file "$guard")"
   echo "Model SHA256 = $actual_model_sha"
   echo "Mozc architectures = $(/usr/bin/lipo -archs "$app_exec")"
   echo "Scorer architectures = $(/usr/bin/lipo -archs "$scorer")"
+  echo "Guard architectures = $(/usr/bin/lipo -archs "$guard")"
   echo "llama architectures = $(/usr/bin/lipo -archs "$llama")"
   echo
   echo "===== RESULT ====="
@@ -575,10 +621,12 @@ echo "===== WRITE VERIFIER AUDIT ====="
   echo "Model / licenses                 = EXACT"
   echo "Mozc Universal                   = PASS"
   echo "mozc_zenz_scorer Universal       = PASS"
+  echo "mozc_zenz_guard Universal        = PASS"
   echo "llama-server Universal           = PASS"
   echo "All deployment targets           = 12.0"
   echo "Runtime dylibs                   = SYSTEM ONLY"
   echo "Tokenizer marker                 = PRESENT BOTH SLICES"
+  echo "Dual-liveness worker marker      = PRESENT BOTH SLICES"
   echo "Nested codesign                  = PASS"
   echo "Native packaged scorer E2E       = PASS"
 } > "$audit"
@@ -594,9 +642,11 @@ echo "Audit SHA256               = $audit_sha"
 echo "Native host                = $host_arch"
 echo "Distribution               = PASS"
 echo "Embedded BUILD-CONTRACT    = PASS"
+echo "Dual-liveness runtime       = SOURCE CONTRACT + MARKER PASS"
 echo "Model / licenses           = EXACT"
 echo "Mozc arches                = $(/usr/bin/lipo -archs "$app_exec")"
 echo "Scorer arches              = $(/usr/bin/lipo -archs "$scorer")"
+echo "Guard arches               = $(/usr/bin/lipo -archs "$guard")"
 echo "llama arches               = $(/usr/bin/lipo -archs "$llama")"
 echo "Nested codesign            = PASS"
 echo "Native packaged scorer E2E = PASS"

@@ -205,6 +205,69 @@ jobs:
           echo "===== ARM64 PACKAGE AUDIT ====="
           cat formal-package/arm64-audit.txt 2>/dev/null || true
 
+  verify_real_scorer_sigkill_noninterference:
+    name: Real scorer SIGKILL and unrelated worker (${{ matrix.arch }})
+    needs: build_and_verify_arm64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout identical Mozkey commit
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Download exact formal package
+        uses: actions/download-artifact@v6
+        with:
+          name: mozkey-zenz-formal-universal-package
+          path: formal-package
+
+      - name: Validate source, architecture, and package identity
+        shell: /bin/zsh {0}
+        run: |
+          set -euo pipefail
+          test "$(/usr/bin/uname -m)" = '${{ matrix.arch }}'
+          CONTRACT="formal-package/ARTIFACT-CONTRACT.txt"
+          PACKAGE="formal-package/Mozc_Zenz_Universal_formal_dev.pkg"
+          test -f "$CONTRACT" && test -f "$PACKAGE"
+          SOURCE_SHA="$(/usr/bin/awk -F= '$1 == "source_commit" {print $2}' "$CONTRACT")"
+          PACKAGE_SHA="$(/usr/bin/awk -F= '$1 == "package_sha256" {print $2}' "$CONTRACT")"
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test "${#PACKAGE_SHA}" -eq 64
+          test "$(/usr/bin/shasum -a 256 "$PACKAGE" | /usr/bin/awk '{print $1}')" = "$PACKAGE_SHA"
+          echo "SOURCE_AND_PKG_IDENTITY=PASS native=${{ matrix.arch }}"
+
+      - name: Test real scorer SIGKILL and unrelated worker noninterference
+        shell: /bin/zsh {0}
+        run: |
+          set -euo pipefail
+          CONTRACT="formal-package/ARTIFACT-CONTRACT.txt"
+          PACKAGE_SHA="$(/usr/bin/awk -F= '$1 == "package_sha256" {print $2}' "$CONTRACT")"
+          /usr/bin/python3 -B \
+            src/mac/installer/zenz_runtime/verify_dual_liveness_sigkill_ci.py \
+            --package formal-package/Mozc_Zenz_Universal_formal_dev.pkg \
+            --expected-sha256 "$PACKAGE_SHA" \
+            --output-root "$RUNNER_TEMP/pr3-real-scorer-sigkill"
+
+      - name: Upload SIGKILL verification summary
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mozkey-pr3-real-scorer-sigkill-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pr3-real-scorer-sigkill/result.json
+          if-no-files-found: warn
+          retention-days: 7
+
   verify_same_package_on_native_intel:
     name: Verify same formal PKG on native Intel
     needs: build_and_verify_arm64

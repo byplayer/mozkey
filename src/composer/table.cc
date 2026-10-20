@@ -254,15 +254,26 @@ bool Table::InitializeWithRequestAndConfig(const commands::Request& request,
       config.punctuation_method();
   const mozc::composer::Entry* entry = nullptr;
 
+  // Reapplying the punctuation/symbol preference must retain attributes from
+  // an existing custom rule, in particular DISPLAY_AMBIGUOUS_RESULT.
+  const auto add_rule_preserving_attributes =
+      [this](absl::string_view input, absl::string_view output,
+             const Entry* previous_entry) {
+        const TableAttributes attributes =
+            previous_entry == nullptr ? NO_TABLE_ATTRIBUTE
+                                      : previous_entry->attributes();
+        return AddRuleWithAttributes(input, output, "", attributes);
+      };
+
   // Comma / Kuten
   entry = LookUp(",");
   if (entry == nullptr ||
       (entry->result() == kKuten && entry->pending().empty())) {
     if (punctuation_method == config::Config::COMMA_PERIOD ||
         punctuation_method == config::Config::COMMA_KUTEN) {
-      AddRule(",", kComma, "");
+      add_rule_preserving_attributes(",", kComma, entry);
     } else {
-      AddRule(",", kKuten, "");
+      add_rule_preserving_attributes(",", kKuten, entry);
     }
   }
 
@@ -272,9 +283,9 @@ bool Table::InitializeWithRequestAndConfig(const commands::Request& request,
       (entry->result() == kTouten && entry->pending().empty())) {
     if (punctuation_method == config::Config::COMMA_PERIOD ||
         punctuation_method == config::Config::TOUTEN_PERIOD) {
-      AddRule(".", kPeriod, "");
+      add_rule_preserving_attributes(".", kPeriod, entry);
     } else {
-      AddRule(".", kTouten, "");
+      add_rule_preserving_attributes(".", kTouten, entry);
     }
   }
 
@@ -287,9 +298,9 @@ bool Table::InitializeWithRequestAndConfig(const commands::Request& request,
       (entry->result() == kMiddleDot && entry->pending().empty())) {
     if (symbol_method == config::Config::SQUARE_BRACKET_SLASH ||
         symbol_method == config::Config::CORNER_BRACKET_SLASH) {
-      AddRule("/", kSlash, "");
+      add_rule_preserving_attributes("/", kSlash, entry);
     } else {
-      AddRule("/", kMiddleDot, "");
+      add_rule_preserving_attributes("/", kMiddleDot, entry);
     }
   }
 
@@ -299,9 +310,9 @@ bool Table::InitializeWithRequestAndConfig(const commands::Request& request,
       (entry->result() == kCornerOpen && entry->pending().empty())) {
     if (symbol_method == config::Config::CORNER_BRACKET_MIDDLE_DOT ||
         symbol_method == config::Config::CORNER_BRACKET_SLASH) {
-      AddRule("[", kCornerOpen, "");
+      add_rule_preserving_attributes("[", kCornerOpen, entry);
     } else {
-      AddRule("[", kSquareOpen, "");
+      add_rule_preserving_attributes("[", kSquareOpen, entry);
     }
   }
 
@@ -311,9 +322,9 @@ bool Table::InitializeWithRequestAndConfig(const commands::Request& request,
       (entry->result() == kCornerClose && entry->pending().empty())) {
     if (symbol_method == config::Config::CORNER_BRACKET_MIDDLE_DOT ||
         symbol_method == config::Config::CORNER_BRACKET_SLASH) {
-      AddRule("]", kCornerClose, "");
+      add_rule_preserving_attributes("]", kCornerClose, entry);
     } else {
-      AddRule("]", kSquareClose, "");
+      add_rule_preserving_attributes("]", kSquareClose, entry);
     }
   }
 

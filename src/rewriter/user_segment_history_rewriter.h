@@ -59,8 +59,13 @@ class UserSegmentHistoryRewriter : public RewriterInterface {
   bool Rewrite(const ConversionRequest& request,
                Segments* segments) const override;
 
+  void PrepareForSuggestionLearning(
+      const ConversionRequest& request) override;
   void Finish(const ConversionRequest& request,
               const Segments& segments) override;
+  void FinishWithSuggestionLearningSegments(
+      const ConversionRequest& request, const Segments& committed_segments,
+      const Segments* suggestion_learning_segments) override;
   bool Sync() override;
   bool Reload() override;
   void Clear() override;

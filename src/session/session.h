@@ -319,6 +319,13 @@ class Session {
     std::unique_ptr<ImeContext> context;
   };
 
+  // One continuation per IME session. Invalidated on every physical key.
+  // Never retain a pointer to a stack-allocated commands::Command.
+  keymap::CommandSequence pending_command_sequence_;
+  uint32_t command_sequence_generation_ = 0;
+  bool command_sequence_waits_for_reconversion_ = false;
+  std::string pending_command_sequence_key_;
+
   std::unique_ptr<ImeContext> context_;
 
   // True only while ordinary composition is displaying a passive suggestion
@@ -329,6 +336,13 @@ class Session {
   // In this mode, ordinary character input should keep editing the underlying
   // composition instead of committing the conversion.
   bool live_conversion_active_ = false;
+
+  // Provenance of the active live conversion. A forced Zenz request sets
+  // live_conversion_active_ even for ordinary conversion with live mode OFF
+  // or ON.  That temporary state must not acquire LiveConversion bindings or
+  // live-edit continuation unless conversion actually started from streaming
+  // composition (including a pending live-conversion request).
+  bool live_conversion_from_composition_ = false;
 
   // True while a live conversion request has been scheduled but not applied yet.
   bool live_conversion_pending_ = false;
@@ -485,6 +499,9 @@ class Session {
     absl::Time issued_at;
     bool pending = false;
     bool submitted = false;
+    // Snapshot manual invocation policy for asynchronous responses.
+    bool forced = false;
+    bool bypass_automatic_feedback = false;
     uint32_t poll_count = 0;
   };
 
@@ -528,6 +545,11 @@ class Session {
     // conversion commit so Mozc history can observe phrase-boundary context.
     std::vector<ZenzProjectedLearningSegment>
         reverse_projected_learning_segments;
+
+    // Only a successfully flushed accepted record requires Undo compensation.
+    // Do not compensate earlier accepted records if this append failed.
+    bool feedback_acceptance_write_succeeded = false;
+    bool mozc_history_learning_requested = false;
 
     // Phase 2: generalized Mozc history may be applied at the same explicit
     // commit point as the Zenz acceptance. Each handle corresponds to one
@@ -725,7 +747,8 @@ class Session {
       const mozc::commands::Input& input,
       PassiveSuggestionSnapshot* snapshot,
       mozc::commands::Output* output);
-  bool FocusHeldPassiveSuggestion(mozc::commands::Command* command);
+  // Focus the actual displayed passive-suggestion list, held or freshly made.
+  bool FocusDisplayedPassiveSuggestion(mozc::commands::Command* command);
   bool AttachLiveConversionSuggestionCandidateWindow(
       const mozc::commands::Input& input,
       mozc::commands::Output* output);
@@ -769,7 +792,13 @@ class Session {
   // zenz live correction.
   bool MaybeApplyZenzFeedbackLiveCorrection(
       mozc::commands::Command* command);
-  bool MaybeScheduleZenzLiveCorrection(mozc::commands::Command* command);
+  bool MaybeScheduleZenzLiveCorrection(
+      mozc::commands::Command* command, bool forced = false,
+      bool bypass_automatic_feedback = false);
+  bool ForceZenzLiveCorrection(
+      mozc::commands::Command* command,
+      bool bypass_automatic_feedback = false);
+  bool ResumeCommandSequence(mozc::commands::Command* command);
   void AttachZenzLiveCorrectionStartCallback(
       mozc::commands::Command* command) const;
   void AttachZenzLiveCorrectionPollCallback(
@@ -874,6 +903,10 @@ class Session {
   bool ExecuteDirectInputCommand(
       mozc::keymap::DirectInputState::Commands key_command,
       mozc::commands::Command* command);
+
+  // An IME ON key can restore hiragana from temporary Shift ASCII without
+  // committing composition. Keep other already-on input modes unchanged.
+  bool IMEOnWhenAlreadyOn(mozc::commands::Command* command);
 
   bool ExecutePrecompositionCommand(
       mozc::keymap::PrecompositionState::Commands key_command,

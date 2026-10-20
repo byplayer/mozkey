@@ -154,6 +154,12 @@ class EngineConverter : public EngineConverterInterface {
   bool RevertExternalConversionLearning(uint64_t revert_id) override;
   bool ConfirmExternalConversionLearning(uint64_t revert_id) override;
 
+  bool TransferExternalConversionLearningOwnershipTo(
+      EngineConverterInterface* successor) override;
+  bool ReceiveExternalConversionLearningOwnership(
+      const ConverterInterface* source_backend,
+      std::vector<Segments>* handles) override;
+
   [[nodiscard]]
   bool ResolveExternalConversionSegments(
       absl::string_view key, absl::string_view value,
@@ -472,6 +478,11 @@ class EngineConverter : public EngineConverterInterface {
   // TODO(team): Check whether we can switch behaviors using state_
   // instead of request_type_.
   ConversionRequest::RequestType request_type_;
+
+  // True only for a candidate focused from the displayed suggestion list.
+  // Do not confuse this with a normally generated prediction candidate.
+  // Reset on new prediction/conversion, cancel, and commit.
+  bool focused_suggestion_for_learning_ = false;
 
   // Default conversion preferences.
   ConversionPreferences conversion_preferences_;

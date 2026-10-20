@@ -41,6 +41,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -164,6 +165,8 @@ bool NeedsRendererUpdateOnLayoutChange(TipTextService* text_service,
 constexpr char kHelpUrl[] = "http://www.google.com/support/ime/japanese";
 constexpr wchar_t kTaskWindowClassName[] =
     L"Google Japanese Input Task Message Window";
+constexpr wchar_t kThemeWindowClassName[] =
+    L"Google Japanese Input Theme Change Window";
 
 // {67526BED-E4BE-47CA-97F8-3C84D5B408DA}
 constexpr GUID kTipPreservedKey_Kanji = {
@@ -198,6 +201,8 @@ constexpr GUID kTipFunctionProvider = {
 constexpr char kHelpUrl[] = "https://github.com/koyasi777/mozkey";
 constexpr wchar_t kTaskWindowClassName[] =
     L"Mozc Immersive Task Message Window";
+constexpr wchar_t kThemeWindowClassName[] =
+    L"Mozc Theme Change Window";
 
 // {F16B7D92-84B0-4AC6-A35B-06EA77180A18}
 constexpr GUID kTipPreservedKey_Kanji = {
@@ -468,8 +473,8 @@ class TipTextServiceImpl
         pending_roman_attribute_(TF_INVALID_GUIDATOM),
         thread_context_(nullptr),
         task_window_handle_(nullptr),
-        renderer_callback_window_handle_(nullptr),
-        has_pending_delayed_session_command_(false) {}
+        theme_window_handle_(nullptr),
+        renderer_callback_window_handle_(nullptr) {}
 
   static bool OnDllProcessAttach(HMODULE module_handle) {
     if (!RegisterWindowClass(module_handle, kTaskWindowClassName,
@@ -481,12 +486,17 @@ class TipTextServiceImpl
                              RendererCallbackWidnowProc)) {
       return false;
     }
+    if (!RegisterWindowClass(module_handle, kThemeWindowClassName,
+                             ThemeWindowProc)) {
+      return false;
+    }
     return true;
   }
 
   static void OnDllProcessDetach(HMODULE module_handle) {
     ::UnregisterClass(kTaskWindowClassName, module_handle);
     ::UnregisterClass(kMessageReceiverClassName, module_handle);
+    ::UnregisterClass(kThemeWindowClassName, module_handle);
   }
 
   // ITfTextInputProcessorEx
@@ -512,6 +522,9 @@ class TipTextServiceImpl
 
     // Stop advising the ITfKeyEvent events.
     UninitKeyEventSink();
+
+    // Stop theme broadcasts before removing language bar items.
+    UninitThemeWindow();
 
     // Remove our button menus from the language bar.
     UninitLanguageBar();
@@ -588,6 +601,13 @@ class TipTextServiceImpl
     if (FAILED(result)) {
       LOG(ERROR) << "InitTaskWindow failed: " << result;
       return Deactivate();
+    }
+
+    // Theme following is non-critical to text input itself.  Keep the IME
+    // usable even if the hidden broadcast receiver cannot be created.
+    result = InitThemeWindow();
+    if (FAILED(result)) {
+      LOG(WARNING) << "InitThemeWindow failed: " << result;
     }
 
     // Do nothing even when we fail to initialize the renderer callback
@@ -1050,22 +1070,41 @@ class TipTextServiceImpl
       return;
     }
 
-    pending_delayed_session_context_ = context;
-    pending_delayed_session_command_ = command;
-    has_pending_delayed_session_command_ = true;
+    // Use an independent timer per callback. The previous single-slot timer
+    // silently replaced an earlier Zenz poll when a user macro added a delay.
+    // Bound outstanding timers to avoid retaining arbitrarily many COM TSF
+    // contexts if a key repeats rapidly or a client stops dispatching timers.
+    constexpr size_t kMaxPendingDelayedSessionCommands = 512;
+    while (delayed_session_commands_.size() >=
+           kMaxPendingDelayedSessionCommands) {
+      const auto oldest = delayed_session_commands_.begin();
+      ::KillTimer(task_window_handle_, oldest->first);
+      delayed_session_commands_.erase(oldest);
+    }
+    UINT_PTR id = next_delayed_session_timer_id_++;
+    if (next_delayed_session_timer_id_ < kDelayedSessionCommandTimerId + 1) {
+      next_delayed_session_timer_id_ = kDelayedSessionCommandTimerId + 1;
+    }
+    while (delayed_session_commands_.contains(id) || id == 0 ||
+           id == kDelayedSessionCommandTimerId) {
+      id = next_delayed_session_timer_id_++;
+    }
+    PendingDelayedSessionCommand pending;
+    pending.context = context;
+    pending.command = command;
+    delayed_session_commands_.emplace(id, std::move(pending));
 
-    ::KillTimer(task_window_handle_, kDelayedSessionCommandTimerId);
-
-    const UINT delay =
-        delay_millisec == 0 ? 1 : static_cast<UINT>(delay_millisec);
-    ::SetTimer(task_window_handle_,
-              kDelayedSessionCommandTimerId,
-              delay,
-              nullptr);
+    const UINT delay = std::max<UINT>(1, delay_millisec);
+    if (::SetTimer(task_window_handle_, id, delay, nullptr) == 0) {
+      delayed_session_commands_.erase(id);
+    }
   }
 
   void UpdateLangbar(bool enabled, uint32_t mozc_mode) override {
-    langbar_.UpdateMenu(enabled, mozc_mode);
+    const bool private_input =
+        thread_context_ != nullptr &&
+        thread_context_->GetInputModeManager()->IsPrivateInput();
+    langbar_.UpdateMenu(enabled, mozc_mode, private_input);
   }
 
   bool IsLangbarInitialized() const override {
@@ -1429,16 +1468,64 @@ class TipTextServiceImpl
       return S_FALSE;
     }
 
-    ::KillTimer(task_window_handle_, kDelayedSessionCommandTimerId);
-    has_pending_delayed_session_command_ = false;
-    pending_delayed_session_command_.Clear();
-    pending_delayed_session_context_.reset();
+    for (const auto& [id, pending] : delayed_session_commands_) {
+      ::KillTimer(task_window_handle_, id);
+    }
+    delayed_session_commands_.clear();
 
     ::DestroyWindow(task_window_handle_);
     task_window_handle_ = nullptr;
     return S_OK;
   }
 
+  HRESULT InitThemeWindow() {
+    if (::IsWindow(theme_window_handle_)) {
+      return S_FALSE;
+    }
+
+    // WM_SETTINGCHANGE broadcasts are not delivered to HWND_MESSAGE windows.
+    // Keep the existing task window message-only and use a separate hidden
+    // top-level tool window solely as a system-theme broadcast receiver.
+    theme_window_handle_ = ::CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kThemeWindowClassName, L"",
+        WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, g_module, nullptr);
+
+    if (!::IsWindow(theme_window_handle_)) {
+      return E_FAIL;
+    }
+    return S_OK;
+  }
+
+  HRESULT UninitThemeWindow() {
+    if (!::IsWindow(theme_window_handle_)) {
+      theme_window_handle_ = nullptr;
+      return S_FALSE;
+    }
+
+    ::DestroyWindow(theme_window_handle_);
+    theme_window_handle_ = nullptr;
+    return S_OK;
+  }
+
+  static LRESULT WINAPI ThemeWindowProc(HWND window_handle, UINT message,
+                                        WPARAM wparam, LPARAM lparam) {
+    TipTextServiceImpl* self = Self();
+    if (self == nullptr) {
+      return ::DefWindowProcW(window_handle, message, wparam, lparam);
+    }
+
+    if (window_handle == self->theme_window_handle_ &&
+        message == WM_SETTINGCHANGE && lparam != 0 &&
+        ::lstrcmpW(reinterpret_cast<LPCWSTR>(lparam),
+                   L"ImmersiveColorSet") == 0) {
+      if (self->langbar_.IsInitialized()) {
+        self->langbar_.RefreshInputModeIconForThemeChange();
+      }
+      return 0;
+    }
+
+    return ::DefWindowProcW(window_handle, message, wparam, lparam);
+  }
   static LRESULT WINAPI TaskWindowProc(HWND window_handle,
                                       UINT message,
                                       WPARAM wparam,
@@ -1455,8 +1542,7 @@ class TipTextServiceImpl
       }
 
       if (message == WM_TIMER &&
-          wparam == kDelayedSessionCommandTimerId) {
-        self->OnDelayedSessionCommandTimer();
+          self->OnDelayedSessionCommandTimer(static_cast<UINT_PTR>(wparam))) {
         return 0;
       }
     }
@@ -1464,30 +1550,17 @@ class TipTextServiceImpl
     return ::DefWindowProcW(window_handle, message, wparam, lparam);
   }
 
-  void OnDelayedSessionCommandTimer() {
-    if (!::IsWindow(task_window_handle_)) {
-      return;
+  bool OnDelayedSessionCommandTimer(UINT_PTR id) {
+    auto it = delayed_session_commands_.find(id);
+    if (it == delayed_session_commands_.end()) return false;
+    ::KillTimer(task_window_handle_, id);
+    PendingDelayedSessionCommand pending = std::move(it->second);
+    delayed_session_commands_.erase(it);
+    if (pending.context) {
+      TipEditSession::SendSessionCommandAsync(
+          this, pending.context.get(), pending.command);
     }
-
-    ::KillTimer(task_window_handle_, kDelayedSessionCommandTimerId);
-
-    if (!has_pending_delayed_session_command_) {
-      return;
-    }
-
-    commands::SessionCommand command = pending_delayed_session_command_;
-    wil::com_ptr_nothrow<ITfContext> context =
-        pending_delayed_session_context_;
-
-    has_pending_delayed_session_command_ = false;
-    pending_delayed_session_command_.Clear();
-    pending_delayed_session_context_.reset();
-
-    if (!context) {
-      return;
-    }
-
-    TipEditSession::SendSessionCommandAsync(this, context.get(), command);
+    return true;
   }
 
   void OnUpdateUI() {
@@ -1625,11 +1698,15 @@ class TipTextServiceImpl
   PreservedKeyMap preserved_key_map_;
   std::unique_ptr<TipThreadContext> thread_context_;
   HWND task_window_handle_;
+  HWND theme_window_handle_;
   HWND renderer_callback_window_handle_;
 
-  bool has_pending_delayed_session_command_;
-  commands::SessionCommand pending_delayed_session_command_;
-  wil::com_ptr_nothrow<ITfContext> pending_delayed_session_context_;
+  struct PendingDelayedSessionCommand {
+    commands::SessionCommand command;
+    wil::com_ptr_nothrow<ITfContext> context;
+  };
+  UINT_PTR next_delayed_session_timer_id_ = kDelayedSessionCommandTimerId + 1;
+  std::map<UINT_PTR, PendingDelayedSessionCommand> delayed_session_commands_;
 };
 
 }  // namespace

@@ -113,9 +113,12 @@ void AddSegment(absl::string_view key,
   candidate->attributes = converter::Attribute::BEST_CANDIDATE;
 }
 
-ConversionRequest CreateZenzFeedbackConversionRequest() {
+ConversionRequest CreateZenzFeedbackConversionRequest(
+    bool enable_minimum_key_length = true) {
   config::Config config;
   config.set_use_zenz_feedback_learning(true);
+  config.set_use_zenz_feedback_reuse(true);
+  config.set_use_zenz_feedback_min_key_length(enable_minimum_key_length);
   config.set_history_learning_level(config::Config::DEFAULT_HISTORY);
 
   ConversionRequest::Options options;
@@ -161,6 +164,22 @@ TEST(ZenzFeedbackCandidateRewriterTest,
   EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "彼は");
   EXPECT_EQ(segments.conversion_segment(1).key(), "てんてきです");
   EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "点滴です");
+}
+
+TEST(ZenzFeedbackCandidateRewriterTest,
+     ShortReadingDoesNotReuseFeedbackWithDefaultSevenCharacterPolicy) {
+  ScopedUserProfileForZenzFeedbackCandidateRewriterTest profile;
+  ASSERT_TRUE(profile.ok());
+  session::ZenzFeedbackStore store;
+  store.RecordAccepted("はし", "empty", "橋");
+
+  Segments segments;
+  AddSegment("はし", "箸", &segments);
+  const ConversionRequest request = CreateZenzFeedbackConversionRequest();
+  ZenzFeedbackCandidateRewriter rewriter;
+  EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segment(0).candidates_size(), 1);
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "箸");
 }
 
 TEST(ZenzFeedbackCandidateRewriterTest,
@@ -426,6 +445,7 @@ TEST(ZenzFeedbackCandidateRewriterTest,
 
   config::Config config;
   config.set_use_zenz_feedback_learning(true);
+  config.set_use_zenz_feedback_reuse(true);
   config.set_history_learning_level(config::Config::DEFAULT_HISTORY);
   config.set_use_zenz_auto_block_rejected_correction(true);
   config.set_zenz_auto_block_reject_threshold(2);
@@ -511,6 +531,7 @@ TEST(ZenzFeedbackCandidateRewriterTest,
      IsNotAvailableForIncognitoOrConvertWithoutHistory) {
   config::Config config;
   config.set_use_zenz_feedback_learning(true);
+  config.set_use_zenz_feedback_reuse(true);
   config.set_history_learning_level(config::Config::DEFAULT_HISTORY);
 
   ConversionRequest::Options options;
@@ -542,6 +563,7 @@ TEST(ZenzFeedbackCandidateRewriterTest,
      IsAvailableAcrossMozcHistoryLearningLevels) {
   config::Config config;
   config.set_use_zenz_feedback_learning(true);
+  config.set_use_zenz_feedback_reuse(true);
 
   ConversionRequest::Options options;
   options.request_type = ConversionRequest::CONVERSION;
@@ -577,6 +599,7 @@ TEST(ZenzFeedbackCandidateRewriterTest,
 
   config::Config config;
   config.set_use_zenz_feedback_learning(true);
+  config.set_use_zenz_feedback_reuse(true);
 
   ConversionRequest::Options options;
   options.request_type = ConversionRequest::CONVERSION;
@@ -618,12 +641,13 @@ TEST(ZenzFeedbackCandidateRewriterTest,
 }
 
 TEST(ZenzFeedbackCandidateRewriterTest,
-     IsNotAvailableWhenZenzFeedbackLearningIsDisabled) {
+     IsNotAvailableWhenZenzFeedbackReuseIsDisabled) {
   ScopedUserProfileForZenzFeedbackCandidateRewriterTest profile;
   ASSERT_TRUE(profile.ok());
 
   config::Config config;
-  config.set_use_zenz_feedback_learning(false);
+  config.set_use_zenz_feedback_learning(true);
+  config.set_use_zenz_feedback_reuse(false);
   config.set_history_learning_level(config::Config::DEFAULT_HISTORY);
 
   ConversionRequest::Options options;
@@ -643,6 +667,60 @@ TEST(ZenzFeedbackCandidateRewriterTest,
 }
 
 TEST(ZenzFeedbackCandidateRewriterTest,
+     ExplicitReuseWorksWithLegacyLearningDisabled) {
+  ScopedUserProfileForZenzFeedbackCandidateRewriterTest profile;
+  ASSERT_TRUE(profile.ok());
+  session::ZenzFeedbackStore store;
+  store.RecordAccepted("かれはてんてきです", "empty", "彼は天敵です");
+
+  config::Config config;
+  config.set_use_zenz_feedback_learning(false);
+  config.set_use_zenz_feedback_reuse(true);
+  config.set_history_learning_level(config::Config::DEFAULT_HISTORY);
+  ConversionRequest::Options options;
+  options.request_type = ConversionRequest::CONVERSION;
+  options.enable_user_history_for_conversion = true;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetConfig(config)
+          .SetOptions(std::move(options))
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .SetKey("かれはてんてきです")
+          .Build();
+
+  Segments segments;
+  AddSegment("かれはてんてきです", "彼は点滴です", &segments);
+  ZenzFeedbackCandidateRewriter rewriter;
+  EXPECT_EQ(rewriter.capability(request), RewriterInterface::CONVERSION);
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  bool found = false;
+  for (const auto& candidate : segments.conversion_segment(0).candidates()) {
+    found |= candidate->value == "彼は天敵です";
+  }
+  EXPECT_TRUE(found);
+}
+
+TEST(ZenzFeedbackCandidateRewriterTest,
+     LegacyLearningOnDoesNotOverrideExplicitReuseOff) {
+  config::Config config;
+  config.set_use_zenz_feedback_learning(true);
+  config.set_use_zenz_feedback_reuse(false);
+  ConversionRequest::Options options;
+  options.request_type = ConversionRequest::CONVERSION;
+  options.enable_user_history_for_conversion = true;
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetConfig(config)
+          .SetOptions(std::move(options))
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .SetKey("かれはてんてきです")
+          .Build();
+  ZenzFeedbackCandidateRewriter rewriter;
+  EXPECT_EQ(rewriter.capability(request), RewriterInterface::NOT_AVAILABLE);
+}
+
+TEST(ZenzFeedbackCandidateRewriterTest,
      RepairsUnrequestedTrailingPunctuationInLearnedFeedback) {
   ScopedUserProfileForZenzFeedbackCandidateRewriterTest profile;
   ASSERT_TRUE(profile.ok());
@@ -653,7 +731,9 @@ TEST(ZenzFeedbackCandidateRewriterTest,
   Segments segments;
   AddSegment("あしたはあめ", "明日は飴", &segments);
 
-  const ConversionRequest request = CreateZenzFeedbackConversionRequest();
+  // Verify the original safety/repair behavior independently of the
+  // newly enabled default minimum-key-length gate.
+  const ConversionRequest request = CreateZenzFeedbackConversionRequest(false);
 
   ZenzFeedbackCandidateRewriter rewriter;
   EXPECT_TRUE(rewriter.Rewrite(request, &segments));
@@ -675,7 +755,9 @@ TEST(ZenzFeedbackCandidateRewriterTest,
   Segments segments;
   AddSegment("するな", "するな", &segments);
 
-  const ConversionRequest request = CreateZenzFeedbackConversionRequest();
+  // Verify the original safety/repair behavior independently of the
+  // newly enabled default minimum-key-length gate.
+  const ConversionRequest request = CreateZenzFeedbackConversionRequest(false);
 
   ZenzFeedbackCandidateRewriter rewriter;
   EXPECT_FALSE(rewriter.Rewrite(request, &segments));
@@ -720,7 +802,9 @@ TEST(ZenzFeedbackCandidateRewriterTest,
   Segments segments;
   AddSegment("とうきょう", "東京", &segments);
 
-  const ConversionRequest request = CreateZenzFeedbackConversionRequest();
+  // Verify the original safety/repair behavior independently of the
+  // newly enabled default minimum-key-length gate.
+  const ConversionRequest request = CreateZenzFeedbackConversionRequest(false);
 
   ZenzFeedbackCandidateRewriter rewriter;
   EXPECT_FALSE(rewriter.Rewrite(request, &segments));

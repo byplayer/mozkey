@@ -117,9 +117,11 @@ bool MaybeMigrateCandidateHideCustomKeymap(Config* config) {
 
     for (absl::string_view command :
          absl::StrSplit(command_sequence, '|', absl::SkipEmpty())) {
-      has_conversion_delete_selected_candidate =
-          absl::StripAsciiWhitespace(command) == "DeleteSelectedCandidate";
-      break;
+      if (absl::StripAsciiWhitespace(command) ==
+          "DeleteSelectedCandidate") {
+        has_conversion_delete_selected_candidate = true;
+        break;
+      }
     }
   }
 
@@ -137,6 +139,111 @@ bool MaybeMigrateCandidateHideCustomKeymap(Config* config) {
   table.push_back('\n');
   config->set_custom_keymap_table(std::move(table));
   return true;
+}
+
+// Persist an explicit Zenz Space action only for CUSTOM tables which still
+// use the original single-step Conversion Space behavior. Never overwrite
+// a user's Zenz-specific binding or reinterpret a customized Space key.
+constexpr absl::string_view kZenzRevertSpaceRow =
+    "ZenzConversion\tSpace\tRevertZenzToMozc";
+
+bool MaybeMigrateZenzRevertCustomKeymap(Config* config) {
+  if (config->session_keymap() != Config::CUSTOM ||
+      config->custom_keymap_table().empty()) {
+    return false;
+  }
+
+  int conversion_space_rows = 0;
+  bool conversion_space_is_convert_next = false;
+  for (absl::string_view line :
+       absl::StrSplit(config->custom_keymap_table(), '\n')) {
+    line = absl::StripAsciiWhitespace(line);
+    if (line.empty() || line.front() == '#') {
+      continue;
+    }
+    const std::vector<absl::string_view> columns =
+        absl::StrSplit(line, '\t');
+    if (columns.size() != 3) {
+      continue;
+    }
+    const absl::string_view state = absl::StripAsciiWhitespace(columns[0]);
+    const absl::string_view key = absl::StripAsciiWhitespace(columns[1]);
+    const absl::string_view value = absl::StripAsciiWhitespace(columns[2]);
+    // An existing Zenz-specific Space binding is owned by the user.
+    if (state == "ZenzConversion" && key == "Space") {
+      return false;
+    }
+    if (state == "Conversion" && key == "Space") {
+      ++conversion_space_rows;
+      conversion_space_is_convert_next = (value == "ConvertNext");
+    }
+  }
+  // No Space rule, duplicate Space rules, or a customized macro: do not alter.
+  if (conversion_space_rows != 1 || !conversion_space_is_convert_next) {
+    return false;
+  }
+  std::string table = config->custom_keymap_table();
+  if (!table.empty() && table.back() != '\n') {
+    table.push_back('\n');
+  }
+  table.append(kZenzRevertSpaceRow.data(), kZenzRevertSpaceRow.size());
+  table.push_back('\n');
+  config->set_custom_keymap_table(std::move(table));
+  return true;
+}
+
+// Preserve physical-Backspace editing when a legacy CUSTOM map inherits
+// Conversion+Backspace=Cancel in live mode. Manual Zenz must instead inherit
+// ordinary Conversion+Backspace; never create a ZenzConversion override.
+// Preserve any explicit user specialized binding.
+bool MaybeMigrateLiveBackspaceCustomKeymap(Config* config) {
+  if (config->session_keymap() != Config::CUSTOM ||
+      config->custom_keymap_table().empty()) {
+    return false;
+  }
+
+  int conversion_backspace_rows = 0;
+  bool is_single_cancel = false;
+  bool has_live_backspace = false;
+  for (absl::string_view line :
+       absl::StrSplit(config->custom_keymap_table(), '\n')) {
+    line = absl::StripAsciiWhitespace(line);
+    if (line.empty() || line.front() == '#') continue;
+    const std::vector<absl::string_view> columns = absl::StrSplit(line, '\t');
+    if (columns.size() != 3) continue;
+    const absl::string_view state = absl::StripAsciiWhitespace(columns[0]);
+    const absl::string_view key = absl::StripAsciiWhitespace(columns[1]);
+    const absl::string_view value = absl::StripAsciiWhitespace(columns[2]);
+    if (key != "Backspace") continue;
+    if (state == "Conversion") {
+      ++conversion_backspace_rows;
+      is_single_cancel = (value == "Cancel");
+    } else if (state == "LiveConversion") {
+      has_live_backspace = true;
+    }
+  }
+  if (conversion_backspace_rows != 1 || !is_single_cancel ||
+      has_live_backspace) {
+    return false;
+  }
+
+  std::string table = config->custom_keymap_table();
+  if (!table.empty() && table.back() != '\n') table.push_back('\n');
+  table.append("LiveConversion\tBackspace\tBackspace\n");
+  config->set_custom_keymap_table(std::move(table));
+  return true;
+}
+
+// Run all migrations even when an earlier one changes the table.
+bool MaybeMigrateMozkeyCustomKeymap(Config* config) {
+  bool changed = MaybeMigrateCandidateHideCustomKeymap(config);
+  if (MaybeMigrateZenzRevertCustomKeymap(config)) {
+    changed = true;
+  }
+  if (MaybeMigrateLiveBackspaceCustomKeymap(config)) {
+    changed = true;
+  }
+  return changed;
 }
 
 // Applies Mozkey-specific product defaults only to fields that have not been
@@ -162,6 +269,26 @@ void ApplyMozkeyProductDefaults(Config* config) {
   }
   if (!config->has_use_zenz_feedback_learning()) {
     config->set_use_zenz_feedback_learning(true);
+  }
+  // Inherit the original combined preference independently for each field.
+  // Respect explicitly saved new values, even when they disagree with 1011.
+  // A missing legacy preference has just received the Mozkey ON default.
+  const bool legacy_zenz_feedback_learning =
+      config->use_zenz_feedback_learning();
+  if (!config->has_use_zenz_feedback_recording()) {
+    config->set_use_zenz_feedback_recording(legacy_zenz_feedback_learning);
+  }
+  if (!config->has_use_zenz_feedback_reuse()) {
+    config->set_use_zenz_feedback_reuse(legacy_zenz_feedback_learning);
+  }
+  if (!config->has_use_zenz_mozc_history_learning()) {
+    config->set_use_zenz_mozc_history_learning(legacy_zenz_feedback_learning);
+  }
+  if (!config->has_use_zenz_feedback_min_key_length()) {
+    config->set_use_zenz_feedback_min_key_length(true);
+  }
+  if (!config->has_zenz_feedback_min_key_length()) {
+    config->set_zenz_feedback_min_key_length(7);
   }
   if (!config->has_use_zenz_auto_block_rejected_correction()) {
     config->set_use_zenz_auto_block_rejected_correction(true);
@@ -337,7 +464,7 @@ void ConfigHandlerImpl::SetConfigInternal(std::shared_ptr<Config> config) {
 }
 
 void ConfigHandlerImpl::SetConfig(Config config) {
-  MaybeMigrateCandidateHideCustomKeymap(&config);
+  MaybeMigrateMozkeyCustomKeymap(&config);
 
   const uint64_t config_hash = CityFingerprint(config.SerializeAsString());
 
@@ -393,12 +520,15 @@ void ConfigHandlerImpl::Reload() {
   MOZC_VLOG(1) << "Reloading config file: " << filename;
   std::unique_ptr<std::istream> is(ConfigFileStream::OpenReadBinary(filename));
   auto input_config = std::make_shared<Config>();
+  bool loaded_from_file = false;
 
   if (is == nullptr) {
     LOG(ERROR) << filename << " is not found";
   } else if (!input_config->ParseFromIstream(is.get())) {
     LOG(ERROR) << filename << " is broken";
     input_config->Clear();  // revert to default setting
+  } else {
+    loaded_from_file = true;
   }
 
   // Close the input stream before AtomicUpdate() replaces the same file.
@@ -407,7 +537,7 @@ void ConfigHandlerImpl::Reload() {
 
   // Persist only the CUSTOM-keymap migration before normalization so
   // unrelated product defaults remain represented by field absence.
-  if (MaybeMigrateCandidateHideCustomKeymap(input_config.get())) {
+  if (MaybeMigrateMozkeyCustomKeymap(input_config.get())) {
     SetMetaData(input_config.get());
     if (!ConfigFileStream::AtomicUpdate(filename,
                                         input_config->SerializeAsString())) {
@@ -419,8 +549,22 @@ void ConfigHandlerImpl::Reload() {
     }
   }
 
-  // we set default config when file is broken
+  // We set the default config when the file is missing or broken.
   NormalizeConfig(input_config.get());
+
+  // Keep SetConfig()'s deduplication fingerprints synchronized with the config
+  // installed by Reload().  Otherwise an identical value from a previous
+  // config file (or before an external reload) can suppress a necessary write.
+  // A missing or broken file has no persisted config to deduplicate against.
+  if (loaded_from_file) {
+    config_hash_ = CityFingerprint(input_config->SerializeAsString());
+    Config without_modified_time = *input_config;
+    without_modified_time.mutable_general_config()->clear_last_modified_time();
+    content_hash_ = CityFingerprint(without_modified_time.SerializeAsString());
+  } else {
+    config_hash_ = 0;
+    content_hash_ = 0;
+  }
 
   SetConfigInternal(input_config);
 }

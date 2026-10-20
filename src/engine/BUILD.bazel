@@ -409,6 +409,13 @@ mozc_cc_library(
     name = "contextual_candidate_reranker",
     srcs = ["contextual_candidate_reranker.cc"],
     hdrs = ["contextual_candidate_reranker.h"],
+    # The converter reuses exactly the display-time ranking for the
+    # verified suggestion-learning probe. The reranker itself only depends on
+    # converter:segments (not converter:converter), avoiding a target cycle.
+    visibility = [
+        "//converter:__pkg__",
+        "//engine:__pkg__",
+    ],
     deps = [
         "//base:util",
         "//converter:segments",

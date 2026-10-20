@@ -635,6 +635,61 @@ class UserHistoryPredictorTest : public testing::TestWithTempUserProfile {
   std::unique_ptr<DataAndPredictor> data_and_predictor_;
 };
 
+// Verified suggestion learning converts a complete reading while the original
+// Composer still contains only the typed prefix. The temporary conversion
+// must use the same user-history key as an ordinary full-reading conversion.
+// All unmarked conversions retain the original Composer-based lookup.
+TEST_F(UserHistoryPredictorTest,
+       VerifiedSuggestionProbeUsesFullReadingForConversionHistory) {
+  UserHistoryPredictor* predictor =
+      GetUserHistoryPredictorWithClearedHistory();
+  InsertEntry(predictor, "かみ", "紙");
+  InsertEntry(predictor, "かみをきる", "髪を切る");
+
+  composer::Composer typed_composer;
+  typed_composer.SetPreeditTextForTestOnly("かみ");
+  composer::Composer full_composer;
+  full_composer.SetPreeditTextForTestOnly("かみをきる");
+  ASSERT_EQ(typed_composer.GetQueryForConversion(), "かみ");
+  ASSERT_EQ(full_composer.GetQueryForConversion(), "かみをきる");
+
+  auto make_request = [&](const composer::Composer& composer,
+                          bool use_explicit_key) {
+    ConversionRequest::Options options;
+    options.request_type = ConversionRequest::CONVERSION;
+    options.use_explicit_key_for_user_history_conversion = use_explicit_key;
+    return ConversionRequestBuilder()
+        .SetComposer(composer)
+        .SetRequestView(request_)
+        .SetContextView(context_)
+        .SetConfigView(config_)
+        .SetOptions(options)
+        .SetKey("かみをきる")
+        .Build();
+  };
+
+  const std::vector<Result> ordinary =
+      predictor->Convert(make_request(full_composer, false));
+  const std::vector<Result> legacy_probe =
+      predictor->Convert(make_request(typed_composer, false));
+  const std::vector<Result> corrected_probe =
+      predictor->Convert(make_request(typed_composer, true));
+
+  ASSERT_FALSE(ordinary.empty());
+  ASSERT_FALSE(legacy_probe.empty());
+  ASSERT_FALSE(corrected_probe.empty());
+  EXPECT_EQ(ordinary.front().key, "かみをきる");
+  EXPECT_EQ(ordinary.front().value, "髪を切る");
+  EXPECT_EQ(legacy_probe.front().key, "かみ");
+  EXPECT_EQ(legacy_probe.front().value, "紙");
+  EXPECT_EQ(corrected_probe.front().key, ordinary.front().key);
+  EXPECT_EQ(corrected_probe.front().value, ordinary.front().value);
+
+  // The override is local to the request: it never changes the composer or
+  // creates/commits a new user-history entry during candidate inspection.
+  EXPECT_EQ(typed_composer.GetQueryForConversion(), "かみ");
+}
+
 TEST_F(UserHistoryPredictorTest, UserHistoryPredictorTest) {
   {
     UserHistoryPredictor* predictor = GetUserHistoryPredictor();

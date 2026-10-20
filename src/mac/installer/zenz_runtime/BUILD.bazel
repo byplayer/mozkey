@@ -52,6 +52,30 @@ filegroup(
 # macOS packaging layer is responsible for producing one same-path Universal
 # executable for the final app bundle.
 apple_universal_binary(
+    name = "mozc_zenz_guard_macos_universal",
+    binary = "//zenz_scorer:mozc_zenz_guard",
+    forced_cpus = [
+        "x86_64",
+        "arm64",
+    ],
+    minimum_deployment_os_version = "12.0",
+    minimum_os_version = "12.0",
+    platform_type = "macos",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+genrule(
+    name = "mozc_zenz_guard_runtime",
+    srcs = [":mozc_zenz_guard_macos_universal"],
+    outs = ["mozc_zenz_guard"],
+    cmd = "/bin/cp $< $@ && /bin/chmod 0755 $@",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//mac:__pkg__"],
+)
+
+apple_universal_binary(
     name = "mozc_zenz_scorer_macos_universal",
     binary = "//zenz_scorer:mozc_zenz_scorer",
     forced_cpus = [

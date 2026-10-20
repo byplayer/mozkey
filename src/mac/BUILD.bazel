@@ -52,6 +52,7 @@ load(
     "MACOS_KEYCHAIN_INSTALLER_RELEASE",
     "MACOS_KEYCHAIN_INSTALLER_TESTING",
 )
+load("//:version.bzl", "MOZKEY_MACOS_INSTALL_VERSION")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -108,6 +109,7 @@ mozc_macos_application(
             "//mac/installer/zenz_runtime:zenz_model_notice": "Resources/ZenzRuntime",
             "//renderer:mozc_renderer_macos": "Resources",
             "//server:mozc_server_macos": "Resources",
+            "//mac/installer/zenz_runtime:mozc_zenz_guard_runtime": "Resources/ZenzRuntime",
             "//mac/installer/zenz_runtime:mozc_zenz_scorer_runtime": "Resources/ZenzRuntime",
         },
     ),
@@ -431,11 +433,30 @@ mozc_macos_application(
     deps = ["uninstaller_main_lib"],
 )
 
+# The regular OSS package remains non-installable.  An installable package is
+# generated only with BOTH --config=oss_macos and --define=MOZKEY_INSTALLABLE=1.
+# Never make the release preflight the default for local development builds.
+config_setting(
+    name = "mozkey_macos_installable",
+    define_values = {
+        "TARGET": "oss_macos",
+        "MOZKEY_INSTALLABLE": "1",
+    },
+)
+
+filegroup(
+    name = "mozkey_macos_preflight_source",
+    srcs = select({
+        ":mozkey_macos_installable": ["preflight_mozkey_release.sh"],
+        "//conditions:default": ["preflight_mozkey_stage1.sh"],
+    }),
+)
+
 genrule(
     name = "tweak_preflight",
     srcs = mozc_select(
         default = ["//mac/installer:preflight_template.sh"],
-        oss = ["//mac/installer:preflight_template.sh"],
+        oss = [":mozkey_macos_preflight_source"],
     ),
     outs = ["preflight.sh"],
     cmd = " ".join([
@@ -444,17 +465,21 @@ genrule(
         " --output $@",
         " --input $<",
         " --build_type ",
-    ]) + BUILD_TYPE_SELECT,  # "dev" or "stable".
+    ]) + BUILD_TYPE_SELECT + (
+        " && /usr/bin/sed -e 's|@@@MOZKEY_INSTALL_VERSION@@@|" +
+        MOZKEY_MACOS_INSTALL_VERSION +
+        "|g' $@ > $@.versioned && /bin/mv $@.versioned $@"
+    ),
     tools = ["//build_tools:tweak_macinstaller_script"],
 )
 
 genrule(
-    name = "tweak_postflight",
+    name = "tweak_postflight_common",
     srcs = mozc_select(
         default = ["//mac/installer:postflight_template.sh"],
         oss = ["//mac/installer:postflight_template.sh"],
     ),
-    outs = ["postflight.sh"],
+    outs = ["postflight_base.sh"],
     cmd = " ".join([
         "$(location" +
         " //build_tools:tweak_macinstaller_script)",
@@ -471,6 +496,36 @@ genrule(
         "//base:mozc_version_txt",
         "//build_tools:tweak_macinstaller_script",
     ],
+)
+
+# Keep shared upstream Mozc postflight unchanged. Only the OSS generation
+# path removes the one known unsafe generic llama-server killall, fail-closed.
+# Default/proprietary builds retain their original unmodified postflight.
+mozc_py_binary(
+    name = "filter_postflight_mozkey_oss",
+    srcs = ["postflight_mozkey_oss_filter.py"],
+    test_lib = False,
+)
+
+genrule(
+    name = "tweak_postflight",
+    srcs = [":tweak_postflight_common"] + mozc_select(
+        default = [],
+        oss = ["postflight_mozkey_oss_cleanup.sh"],
+    ),
+    outs = ["postflight.sh"],
+    cmd = mozc_select(
+        default = "/bin/cat $(location :tweak_postflight_common) > $@",
+        oss = "$(location :filter_postflight_mozkey_oss)" +
+              " --input $(location :tweak_postflight_common)" +
+              " --tail $(location postflight_mozkey_oss_cleanup.sh)" +
+              " --output $@",
+    ),
+    tags = MOZC_TAGS.MAC_ONLY,
+    tools = mozc_select(
+        default = [],
+        oss = [":filter_postflight_mozkey_oss"],
+    ),
 )
 
 mozc_py_binary(
@@ -575,12 +630,17 @@ mozc_py_binary(
     name = "build_package",
     srcs = ["build_package.py"],
     test_lib = False,
-    deps = ["//build_tools:util"],
+    deps = [
+        "//build_tools:mozc_version_lib",
+        "//build_tools:util",
+    ],
 )
 
 genrule(
     name = "package",
-    srcs = [":package_files"],
+    srcs = [":package_files"] + mozc_select(
+        oss = ["//base:mozc_version_txt"],
+    ),
     outs = ["Mozc.pkg"],
     cmd = "$(location :build_package) --input $(location :package_files)" +
           " --output $@" +
@@ -588,7 +648,7 @@ genrule(
           ' --keychain "' + KEYCHAIN_INSTALLER_SELECT + '"' +
           mozc_select(
               default = "",
-              oss = " --oss",
+              oss = " --oss --version_file $(location //base:mozc_version_txt)",
               prod = "",
           ),
     exec_compatible_with = ["@platforms//os:macos"],

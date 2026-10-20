@@ -68,6 +68,8 @@ mozc::zenz_scorer::PosixScorerRuntimeOptions LoadRuntimeOptions() {
   options.socket_path = mozc::zenz::GetZenzUnixSocketPath();
   options.llama_server.executable_path =
       JoinPath(executable_directory, "llama-server");
+  options.llama_server.guard_executable_path =
+      JoinPath(executable_directory, "mozc_zenz_guard");
   options.llama_server.model_path =
       JoinPath(JoinPath(executable_directory, "models"), kModelFileName);
   options.llama_server.context_size = kDefaultContextSize;

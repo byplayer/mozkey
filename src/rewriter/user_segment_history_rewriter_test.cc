@@ -426,6 +426,189 @@ TEST_F(UserSegmentHistoryRewriterTest,
   EXPECT_EQ(segments.segment(0).candidate(0).value, "candidate0");
 }
 
+// The separately validated suggestion view must teach legacy segment history
+// the complete native conversion key, not the user's incomplete typed prefix.
+// This test uses the real UserSegmentHistoryRewriter storage and Rewrite path.
+TEST_F(UserSegmentHistoryRewriterTest,
+       VerifiedSuggestionLearningViewUsesCompleteReading) {
+  auto rewriter = CreateUserSegmentHistoryRewriter();
+  rewriter->Clear();
+  const ConversionRequest request = CreateConversionRequest();
+
+  Segments committed;
+  InitSegments(&committed, 1);
+  committed.mutable_segment(0)->set_key("segment");  // Typed prefix.
+  committed.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+  committed.set_revert_id(701);
+
+  Segments learning;
+  InitSegments(&learning, 1);  // Full key is "segment0".
+  learning.mutable_segment(0)->move_candidate(2, 0);
+  learning.mutable_segment(0)->mutable_candidate(0)->attributes |=
+      converter::Attribute::RERANKED;
+  learning.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+  learning.set_revert_id(committed.revert_id());
+
+  rewriter->FinishWithSuggestionLearningSegments(request, committed, &learning);
+
+  Segments full_key_probe;
+  InitSegments(&full_key_probe, 1);
+  EXPECT_TRUE(rewriter->Rewrite(request, &full_key_probe));
+  EXPECT_EQ(full_key_probe.segment(0).candidate(0).value, "candidate2");
+
+  Segments typed_prefix_probe;
+  InitSegments(&typed_prefix_probe, 1);
+  typed_prefix_probe.mutable_segment(0)->set_key("segment");
+  for (converter::Candidate* candidate :
+       typed_prefix_probe.mutable_segment(0)->candidates()) {
+    candidate->content_key = "segment";
+  }
+  EXPECT_FALSE(rewriter->Rewrite(request, &typed_prefix_probe));
+  EXPECT_EQ(typed_prefix_probe.segment(0).candidate(0).value, "candidate0");
+}
+
+// Ordinary Mozc undo retains its existing deferred-revert semantics. The
+// verified suggestion view must share the original commit's revert ID so that
+// its new full-reading feature keys are removed by that existing pathway.
+TEST_F(UserSegmentHistoryRewriterTest,
+       VerifiedSuggestionLearningViewUsesOriginalUndoIdentity) {
+  auto rewriter = CreateUserSegmentHistoryRewriter();
+  rewriter->Clear();
+  const ConversionRequest request = CreateConversionRequest();
+
+  Segments committed;
+  InitSegments(&committed, 1);
+  committed.mutable_segment(0)->set_key("segment");
+  committed.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+  committed.set_revert_id(702);
+
+  Segments learning;
+  InitSegments(&learning, 1);
+  learning.mutable_segment(0)->move_candidate(2, 0);
+  learning.mutable_segment(0)->mutable_candidate(0)->attributes |=
+      converter::Attribute::RERANKED;
+  learning.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+  learning.set_revert_id(committed.revert_id());
+  rewriter->FinishWithSuggestionLearningSegments(request, committed, &learning);
+
+  Segments before_undo;
+  InitSegments(&before_undo, 1);
+  EXPECT_TRUE(rewriter->Rewrite(request, &before_undo));
+  EXPECT_EQ(before_undo.segment(0).candidate(0).value, "candidate2");
+
+  // This schedules the normal deferred revert, and the following Rewrite
+  // applies it with empty preceding_text (the committed text was removed).
+  rewriter->Revert(committed);
+  Segments after_undo;
+  InitSegments(&after_undo, 1);
+  rewriter->Rewrite(request, &after_undo);
+  EXPECT_EQ(after_undo.segment(0).candidate(0).value, "candidate0");
+}
+
+// A suggestion with reverse-resolved native boundaries must learn the local
+// selections as one transaction. An undo of that one commit removes both
+// locally learned preferences using the original revert ID.
+TEST_F(UserSegmentHistoryRewriterTest,
+       VerifiedSuggestionMultiSegmentLearningAndUndoAreOneTransaction) {
+  auto rewriter = CreateUserSegmentHistoryRewriter();
+  rewriter->Clear();
+  const ConversionRequest request = CreateConversionRequest();
+
+  Segments committed;
+  InitSegments(&committed, 1);
+  committed.mutable_segment(0)->set_key("segment");  // Typed prefix.
+  committed.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+  committed.set_revert_id(703);
+
+  Segments learning;
+  InitSegments(&learning, 2);  // Full native keys: segment0, segment1.
+  learning.set_revert_id(committed.revert_id());
+  for (size_t i = 0; i < 2; ++i) {
+    Segment* segment = learning.mutable_segment(i);
+    segment->move_candidate(static_cast<int>(i + 2), 0);
+    segment->mutable_candidate(0)->attributes |=
+        converter::Attribute::RERANKED;
+    segment->set_segment_type(Segment::FIXED_VALUE);
+  }
+
+  rewriter->FinishWithSuggestionLearningSegments(request, committed, &learning);
+  Segments probe;
+  InitSegments(&probe, 2);
+  rewriter->Rewrite(request, &probe);
+  EXPECT_EQ(probe.segment(0).candidate(0).value, "candidate2");
+  EXPECT_EQ(probe.segment(1).candidate(0).value, "candidate3");
+
+  rewriter->Revert(committed);
+  InitSegments(&probe, 2);
+  rewriter->Rewrite(request, &probe);
+  EXPECT_EQ(probe.segment(0).candidate(0).value, "candidate0");
+  EXPECT_EQ(probe.segment(1).candidate(0).value, "candidate0");
+}
+
+// No Rewrite between undo and recommit: the old deferred delete must run
+// BEFORE recording the new preference, rather than removing it afterward.
+TEST_F(UserSegmentHistoryRewriterTest,
+       VerifiedSuggestionUndoThenImmediateRecommitKeepsNewPreference) {
+  auto rewriter = CreateUserSegmentHistoryRewriter();
+  rewriter->Clear();
+  const ConversionRequest request = CreateConversionRequest();
+
+  auto make_commit = [](int candidate_index, uint64_t revert_id) {
+    Segments result;
+    InitSegments(&result, 1);
+    result.mutable_segment(0)->move_candidate(candidate_index, 0);
+    result.mutable_segment(0)->mutable_candidate(0)->attributes |=
+        converter::Attribute::RERANKED;
+    result.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+    result.set_revert_id(revert_id);
+    return result;
+  };
+
+  Segments old_commit = make_commit(2, 91001);
+  rewriter->Finish(request, old_commit);
+  rewriter->Revert(old_commit);  // Deferred; no intervening Rewrite.
+
+  Segments new_commit = make_commit(3, 91002);
+  rewriter->Finish(request, new_commit);
+
+  Segments result;
+  InitSegments(&result, 1);
+  rewriter->Rewrite(request, &result);
+  EXPECT_EQ(result.segment(0).candidate(0).value, "candidate3");
+
+  rewriter->Revert(new_commit);
+  InitSegments(&result, 1);
+  rewriter->Rewrite(request, &result);
+  EXPECT_EQ(result.segment(0).candidate(0).value, "candidate0");
+}
+
+// The verification probe must see history AFTER a pending undo. Otherwise an
+// undone preference can incorrectly appear to be the already displayed top.
+TEST_F(UserSegmentHistoryRewriterTest,
+       VerifiedSuggestionProbeFlushesPendingUndoBeforeRanking) {
+  auto rewriter = CreateUserSegmentHistoryRewriter();
+  rewriter->Clear();
+  const ConversionRequest request = CreateConversionRequest();
+
+  Segments old_commit;
+  InitSegments(&old_commit, 1);
+  old_commit.mutable_segment(0)->move_candidate(2, 0);
+  old_commit.mutable_segment(0)->mutable_candidate(0)->attributes |=
+      converter::Attribute::RERANKED;
+  old_commit.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+  old_commit.set_revert_id(91003);
+  rewriter->Finish(request, old_commit);
+  rewriter->Revert(old_commit);
+  rewriter->PrepareForSuggestionLearning(request);
+
+  // This Rewrite should no longer see the old preference even though no
+  // ordinary Rewrite happened between Undo and the preparation call.
+  Segments after_undo;
+  InitSegments(&after_undo, 1);
+  rewriter->Rewrite(request, &after_undo);
+  EXPECT_EQ(after_undo.segment(0).candidate(0).value, "candidate0");
+}
+
 TEST_F(UserSegmentHistoryRewriterTest, BasicTest) {
   Segments segments;
   std::unique_ptr<UserSegmentHistoryRewriter> rewriter(

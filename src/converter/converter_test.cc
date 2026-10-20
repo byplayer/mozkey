@@ -81,6 +81,7 @@
 #include "request/conversion_request.h"
 #include "request/request_test_util.h"
 #include "rewriter/date_rewriter.h"
+#include "rewriter/merger_rewriter.h"
 #include "rewriter/rewriter.h"
 #include "rewriter/rewriter_interface.h"
 #include "testing/gmock.h"
@@ -519,7 +520,8 @@ class ConverterTest : public testing::TestWithTempUserProfile {
 
 
   std::unique_ptr<Converter> CreateConverterForAlternateReverseReading(
-      AlternateReverseReadingMode mode) {
+      AlternateReverseReadingMode mode,
+      std::unique_ptr<RewriterInterface> rewriter = nullptr) {
     absl::StatusOr<std::unique_ptr<engine::Modules>> modules =
         engine::Modules::Create(std::make_unique<testing::MockDataManager>());
     CHECK_OK(modules);
@@ -533,7 +535,11 @@ class ConverterTest : public testing::TestWithTempUserProfile {
            const ImmutableConverterInterface&) {
           return std::make_unique<StubPredictor>();
         },
-        [](const engine::Modules&) {
+        [&rewriter](const engine::Modules&)
+            -> std::unique_ptr<RewriterInterface> {
+          if (rewriter) {
+            return std::move(rewriter);
+          }
           return std::make_unique<StubRewriter>();
         });
   }
@@ -4232,6 +4238,641 @@ TEST_F(ConverterTest, ApplyPredictionToConversionHistoryContextTest) {
   EXPECT_TRUE(converter->StartConversion(convreq, &segments));
   ASSERT_EQ(segments.conversion_segments_size(), 1);
   EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "本日");
+}
+
+// The verified learning view must never replace the real committed Segment.
+// It is forwarded only to legacy user-segment history, not to the predictor
+// or the other rewriters (for example character-form preference learning).
+class SuggestionLearningProbeImmutableConverter
+    : public ImmutableConverterInterface {
+ public:
+  bool Convert(const ConversionOptions& options,
+               Segments* segments) const override {
+    if (options.request_type != RequestType::CONVERSION ||
+        segments == nullptr) {
+      return false;
+    }
+    // Model native normal conversion that chooses two segments on its own,
+    // without requiring candidate-supplied or reverse-derived boundaries.
+    if (segments->conversion_segments_size() == 1 &&
+        segments->conversion_segment(0).key() == "きょうはいった") {
+      const std::array<uint8_t, 2> lengths = {4, 3};
+      if (!segments->Resize(0, lengths)) {
+        return false;
+      }
+    }
+    if (segments->conversion_segments_size() == 1 &&
+        (segments->conversion_segment(0).key() == "みずのいろ" ||
+         segments->conversion_segment(0).key() == "かわのそら" ||
+         segments->conversion_segment(0).key() == "くものそら" ||
+         segments->conversion_segment(0).key() == "かわのに")) {
+      const std::array<uint8_t, 2> lengths =
+          {3, static_cast<uint8_t>(segments->conversion_segment(0).key() ==
+                                   "かわのに" ? 1 : 2)};
+      if (!segments->Resize(0, lengths)) {
+        return false;
+      }
+    }
+    for (Segment& segment : segments->conversion_segments()) {
+      const std::string key(segment.key());
+      segment.clear_candidates();
+      if (key == "げんしょう") {
+        AddNativeCandidate(key, "減少", &segment);
+        AddNativeCandidate(key, "現象", &segment);
+      } else if (key == "きょうは") {
+        AddNativeCandidate(key, "京は", &segment);
+        AddNativeCandidate(key, "今日は", &segment);
+      } else if (key == "いった") {
+        AddNativeCandidate(key, "行った", &segment);
+      } else if (key == "みずの") {
+        AddNativeCandidate(key, "水野", &segment);
+        AddNativeCandidate(key, "水の", &segment);
+        // A normal reading can have more than 64 candidates. Their mere
+        // presence must not block learning an exact existing second choice.
+        for (size_t i = 0; i < 72; ++i) {
+          AddNativeCandidate(key, absl::StrCat("候補", i), &segment);
+        }
+      } else if (key == "かわの") {
+        AddNativeCandidate(key, "河野", &segment);
+      } else if (key == "くもの") {
+        AddNativeCandidate(key, "雲の", &segment);
+      } else if (key == "いろ") {
+        AddNativeCandidate(key, "色", &segment);
+      } else if (key == "そら") {
+        AddNativeCandidate(key, "空", &segment);
+      } else if (key == "に") {
+        AddNativeCandidate(key, "二", &segment);
+        AddNativeCandidate(key, "に", &segment);
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+
+ private:
+  static void AddNativeCandidate(absl::string_view key,
+                                 absl::string_view value, Segment* segment) {
+    Candidate* candidate = segment->add_candidate();
+    candidate->key = std::string(key);
+    candidate->content_key = candidate->key;
+    candidate->value = std::string(value);
+    candidate->content_value = candidate->value;
+    candidate->lid = 1;
+    candidate->rid = 1;
+  }
+};
+
+class SuggestionLearningRecordingRewriter : public RewriterInterface {
+ public:
+  bool Rewrite(const ConversionRequest&, Segments*) const override {
+    return false;
+  }
+
+  void PrepareForSuggestionLearning(
+      const ConversionRequest&) override {
+    ++prepare_calls;
+  }
+
+  void Finish(const ConversionRequest&, const Segments& committed) override {
+    ++finish_calls;
+    committed_key = committed.conversion_segment(0).key();
+    committed_value = committed.conversion_segment(0).candidate(0).value;
+  }
+
+  void FinishWithSuggestionLearningSegments(
+      const ConversionRequest& request, const Segments& committed,
+      const Segments* learning) override {
+    ++suggestion_view_calls;
+    has_learning_view = learning != nullptr;
+    if (learning != nullptr) {
+      learning_revert_id = learning->revert_id();
+      learning_keys.clear();
+      learning_values.clear();
+      reranked.clear();
+      for (const Segment& seg : learning->conversion_segments()) {
+        learning_keys.push_back(std::string(seg.key()));
+        learning_values.push_back(seg.candidate(0).value);
+        reranked.push_back(
+            (seg.candidate(0).attributes & Attribute::RERANKED) != 0);
+      }
+    }
+    committed_revert_id = committed.revert_id();
+    Finish(request, committed);
+  }
+
+  int finish_calls = 0;
+  int prepare_calls = 0;
+  int suggestion_view_calls = 0;
+  bool has_learning_view = false;
+  uint64_t committed_revert_id = 0;
+  uint64_t learning_revert_id = 0;
+  std::string committed_key;
+  std::string committed_value;
+  std::vector<std::string> learning_keys;
+  std::vector<std::string> learning_values;
+  std::vector<bool> reranked;
+};
+
+// Adds or reorders candidates only at normal conversion postprocessing.
+// The immutable converter alone does not represent the displayed list.
+class SuggestionLearningPresentationRewriter
+    : public SuggestionLearningRecordingRewriter {
+ public:
+  bool Rewrite(const ConversionRequest& request,
+               Segments* segments) const override {
+    if (request.request_type() != ConversionRequest::CONVERSION ||
+        segments->conversion_segments_size() != 2) {
+      return false;
+    }
+    Segment* first = segments->mutable_conversion_segment(0);
+    if (request.key() == "みずのいろ" && first->key() == "みずの") {
+      // Two different surface paths both spell "水の色":
+      //  ("水の", "色") and ("水", "の色"). The unique-path matcher
+      // must fall through to the authoritative supplied boundaries.
+      first->move_candidate(1, 0);  // Displayed "水の" is now the top.
+      Candidate* alt_first = first->add_candidate();
+      *alt_first = first->candidate(0);
+      alt_first->value = "水";
+      alt_first->content_value = "水";
+      Segment* second = segments->mutable_conversion_segment(1);
+      Candidate* alt_second = second->add_candidate();
+      *alt_second = second->candidate(0);
+      alt_second->value = "の色";
+      alt_second->content_value = "の色";
+      return true;
+    }
+    if (request.key() == "かわのそら" && first->key() == "かわの") {
+      const Candidate sample = first->candidate(0);
+      Candidate* added = first->add_candidate();
+      *added = sample;
+      added->value = "川の";
+      added->content_value = added->value;
+      return true;
+    }
+    if (request.key() == "くものそら" && first->key() == "くもの") {
+      const Candidate sample = first->candidate(0);
+      Candidate* added = first->push_front_candidate();
+      *added = sample;
+      added->value = "蜘蛛の";
+      added->content_value = added->value;
+      return true;
+    }
+    return false;
+  }
+};
+
+std::unique_ptr<Converter> MakeSuggestionLearningProbeConverter(
+    std::unique_ptr<RewriterInterface> rewriter) {
+  absl::StatusOr<std::unique_ptr<engine::Modules>> modules =
+      engine::Modules::Create(std::make_unique<testing::MockDataManager>());
+  CHECK_OK(modules);
+  return std::make_unique<Converter>(
+      *std::move(modules),
+      [](const engine::Modules&) {
+        return std::make_unique<SuggestionLearningProbeImmutableConverter>();
+      },
+      [](const engine::Modules&, const ConverterInterface&,
+         const ImmutableConverterInterface&) {
+        return std::make_unique<StubPredictor>();
+      },
+      [&rewriter](const engine::Modules&) {
+        return std::move(rewriter);
+      });
+}
+
+ConversionRequest MakeSuggestionLearningProbeRequest(
+    absl::string_view key, bool enabled = true) {
+  config::Config config;
+  config.set_history_learning_level(config::Config::DEFAULT_HISTORY);
+  ConversionRequest::Options options;
+  options.enable_verified_suggestion_segment_learning = enabled;
+  return ConversionRequestBuilder()
+      .SetConfig(config)
+      .SetOptions(options)
+      .SetKey(key)
+      .Build();
+}
+
+void AddSuggestionCandidate(Segments* segments, absl::string_view typed,
+                            absl::string_view full_key,
+                            absl::string_view value) {
+  segments->set_max_history_segments_size(3);
+  Segment* seg = segments->add_segment();
+  seg->set_key(typed);
+  Candidate* candidate = seg->add_candidate();
+  candidate->key = std::string(full_key);
+  candidate->content_key = candidate->key;
+  candidate->value = std::string(value);
+  candidate->content_value = candidate->value;
+  candidate->lid = 1;
+  candidate->rid = 1;
+}
+
+// Non-user-history rewriters must receive the original commit, even when
+// another rewriter opts in to the verified segment view.
+class SuggestionLearningPlainFinishRewriter : public RewriterInterface {
+ public:
+  bool Rewrite(const ConversionRequest&, Segments*) const override {
+    return false;
+  }
+  void Finish(const ConversionRequest&, const Segments& committed) override {
+    ++finish_calls;
+    committed_key = committed.conversion_segment(0).key();
+  }
+  int finish_calls = 0;
+  std::string committed_key;
+};
+
+TEST_F(ConverterTest, VerifiedSuggestionMergerPreservesOtherRewriters) {
+  auto merger = std::make_unique<MergerRewriter>();
+  auto verified = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* verified_seen = verified.get();
+  auto plain = std::make_unique<SuggestionLearningPlainFinishRewriter>();
+  auto* plain_seen = plain.get();
+  merger->AddRewriter(std::move(verified));
+  merger->AddRewriter(std::move(plain));
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(merger));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "げん", "げんしょう", "現象");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("げん"),
+                              &segments);
+  EXPECT_EQ(verified_seen->prepare_calls, 1);
+  EXPECT_EQ(verified_seen->finish_calls, 1);
+  EXPECT_EQ(verified_seen->learning_keys,
+            std::vector<std::string>{"げんしょう"});
+  EXPECT_EQ(plain_seen->finish_calls, 1);
+  EXPECT_EQ(plain_seen->committed_key, "げん");
+}
+
+TEST_F(ConverterTest, VerifiedSuggestionLearnsFullNativeReadingOnce) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "げん", "げんしょう", "現象");
+  const ConversionRequest request =
+      MakeSuggestionLearningProbeRequest("げん");
+  converter->FinishConversion(request, &segments);
+
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 1);
+  EXPECT_TRUE(seen->has_learning_view);
+  EXPECT_EQ(seen->committed_key, "げん");  // unchanged real commit
+  EXPECT_EQ(seen->committed_value, "現象");
+  EXPECT_EQ(seen->learning_keys, std::vector<std::string>{"げんしょう"});
+  EXPECT_EQ(seen->learning_values, std::vector<std::string>{"現象"});
+  EXPECT_EQ(seen->reranked, std::vector<bool>{true});
+  EXPECT_NE(seen->committed_revert_id, 0);
+  EXPECT_EQ(seen->learning_revert_id, seen->committed_revert_id);
+}
+
+// The field type is part of ComposerData, not necessarily the transient
+// commands::Context. A password field must not create a verified learning
+// view even when the suggestion-learning option is enabled.
+TEST_F(ConverterTest, PasswordSuggestionKeepsOriginalLearningPath) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+
+  composer::Composer composer;
+  composer.SetInputFieldType(commands::Context::PASSWORD);
+  config::Config config;
+  config.set_history_learning_level(config::Config::DEFAULT_HISTORY);
+  ConversionRequest::Options options;
+  options.enable_verified_suggestion_segment_learning = true;
+  const ConversionRequest request = ConversionRequestBuilder()
+                                        .SetComposer(composer)
+                                        .SetConfig(config)
+                                        .SetOptions(options)
+                                        .SetKey("げん")
+                                        .Build();
+
+  Segments segments;
+  AddSuggestionCandidate(&segments, "げん", "げんしょう", "現象");
+  converter->FinishConversion(request, &segments);
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 0);
+  EXPECT_EQ(seen->committed_key, "げん");
+}
+
+TEST_F(ConverterTest, VerifiedSuggestionPreservesNativeInnerBoundaries) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "きょう", "きょうはいった", "今日は行った");
+  Candidate* candidate = segments.mutable_conversion_segment(0)
+                             ->mutable_candidate(0);
+  candidate->inner_segment_boundary = BuildInnerSegmentBoundary(
+      {{12, 9, 12, 9}, {9, 9, 9, 9}}, candidate->key, candidate->value);
+  ASSERT_EQ(candidate->inner_segment_boundary.size(), 2);
+  const ConversionRequest request =
+      MakeSuggestionLearningProbeRequest("きょう");
+  converter->FinishConversion(request, &segments);
+
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->learning_keys,
+            (std::vector<std::string>{"きょうは", "いった"}));
+  EXPECT_EQ(seen->learning_values,
+            (std::vector<std::string>{"今日は", "行った"}));
+  EXPECT_EQ(seen->reranked, (std::vector<bool>{true, false}));
+  EXPECT_EQ(seen->learning_revert_id, seen->committed_revert_id);
+}
+
+// User history can intentionally discard its original inner boundaries when
+// producing a suggestion. Recover a *unique* native segmentation at commit
+// time, using the same reverse-reading resolver as Zenz, without learning the
+// accepted text twice or replacing the actual committed suggestion.
+TEST_F(ConverterTest, VerifiedSuggestionResolvesMissingInnerBoundaries) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      CreateConverter(std::move(recorder), STUB_PREDICTOR);
+
+  Segments segments;
+  AddSuggestionCandidate(&segments, "わたし", "わたしのなまえ", "私の名前");
+  ASSERT_TRUE(segments.conversion_segment(0)
+                  .candidate(0)
+                  .inner_segment_boundary.empty());
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("わたし"),
+                              &segments);
+
+  ASSERT_EQ(seen->finish_calls, 1);
+  ASSERT_EQ(seen->suggestion_view_calls, 1);
+  ASSERT_GT(seen->learning_keys.size(), 1);
+  ASSERT_EQ(seen->learning_keys.size(), seen->learning_values.size());
+  std::string reconstructed_key;
+  std::string reconstructed_value;
+  for (const std::string& key : seen->learning_keys) {
+    reconstructed_key.append(key);
+  }
+  for (const std::string& value : seen->learning_values) {
+    reconstructed_value.append(value);
+  }
+  EXPECT_EQ(reconstructed_key, "わたしのなまえ");
+  EXPECT_EQ(reconstructed_value, "私の名前");
+  EXPECT_EQ(seen->committed_key, "わたし");
+  EXPECT_EQ(seen->committed_value, "私の名前");
+  EXPECT_EQ(seen->learning_revert_id, seen->committed_revert_id);
+  EXPECT_NE(seen->committed_revert_id, 0);
+}
+
+// An unresolvable surface must never be split into speculative local
+// preferences. The existing full-suggestion commit remains unchanged.
+// A single placeholder inner boundary is not authoritative segmentation.
+// The original history result may contain exactly this placeholder even when
+// its accepted surface is a multi-segment phrase.
+TEST_F(ConverterTest, VerifiedSuggestionResolvesPlaceholderInnerBoundary) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      CreateConverter(std::move(recorder), STUB_PREDICTOR);
+
+  Segments segments;
+  AddSuggestionCandidate(&segments, "わたし", "わたしのなまえ", "私の名前");
+  Candidate* candidate =
+      segments.mutable_conversion_segment(0)->mutable_candidate(0);
+  candidate->inner_segment_boundary = BuildInnerSegmentBoundary(
+      {{21, 12, 21, 12}}, candidate->key, candidate->value);
+  ASSERT_EQ(candidate->inner_segment_boundary.size(), 1);
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("わたし"),
+                              &segments);
+
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 1);
+  EXPECT_GT(seen->learning_keys.size(), 1);
+  EXPECT_EQ(seen->learning_revert_id, seen->committed_revert_id);
+}
+
+// Even two valid reverse-reading paths must not turn into a guessed boundary.
+// This reproduces the ambiguous path already covered by the Zenz resolver.
+TEST_F(ConverterTest, VerifiedSuggestionRejectsAmbiguousNativeSplit) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      CreateConverterForAlternateReverseReading(
+          AlternateReverseReadingMode::kAmbiguousIncludingPreferred,
+          std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "あ", "あいう", "甲乙");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("あ"),
+                              &segments);
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 0);
+  EXPECT_EQ(seen->committed_key, "あ");
+  EXPECT_EQ(seen->committed_value, "甲乙");
+}
+
+TEST_F(ConverterTest, VerifiedSuggestionDoesNotGuessUnknownBoundaries) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+
+  Segments segments;
+  AddSuggestionCandidate(&segments, "わたし", "わたしのなまえ", "私の名前");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("わたし"),
+                              &segments);
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 0);
+  EXPECT_EQ(seen->committed_key, "わたし");
+  EXPECT_EQ(seen->committed_value, "私の名前");
+}
+
+// A suggestion without inner boundaries must still learn a non-top candidate
+// already present in the ordinary native multi-segment conversion result.
+TEST_F(ConverterTest, VerifiedSuggestionLearnsNativeNormalSegmentation) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "みず", "みずのいろ", "水の色");
+  ASSERT_TRUE(segments.conversion_segment(0)
+                  .candidate(0)
+                  .inner_segment_boundary.empty());
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("みず"),
+                              &segments);
+
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 1);
+  EXPECT_EQ(seen->learning_keys,
+            (std::vector<std::string>{"みずの", "いろ"}));
+  EXPECT_EQ(seen->learning_values,
+            (std::vector<std::string>{"水の", "色"}));
+  EXPECT_EQ(seen->reranked, (std::vector<bool>{true, false}));
+  EXPECT_EQ(seen->committed_key, "みず");
+  EXPECT_EQ(seen->committed_value, "水の色");
+  EXPECT_EQ(seen->learning_revert_id, seen->committed_revert_id);
+}
+
+// Unmatched normal segments must not lead to invented dictionary candidates.
+TEST_F(ConverterTest, UnmatchedNativeNormalSegmentsDoNotInventCandidates) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "みず", "みずのいろ", "水色の");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("みず"),
+                              &segments);
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->committed_value, "水色の");
+  EXPECT_EQ(seen->suggestion_view_calls, 0);
+}
+
+// The accepted first phrase is created only by normal-conversion
+// postprocessing, not by the immutable converter. It must still learn.
+TEST_F(ConverterTest, VerifiedSuggestionLearnsPostprocessedNativeCandidate) {
+  auto recorder = std::make_unique<SuggestionLearningPresentationRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "かわ", "かわのそら", "川の空");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("かわ"),
+                              &segments);
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 1);
+  EXPECT_EQ(seen->learning_keys,
+            (std::vector<std::string>{"かわの", "そら"}));
+  EXPECT_EQ(seen->learning_values,
+            (std::vector<std::string>{"川の", "空"}));
+  EXPECT_EQ(seen->reranked, (std::vector<bool>{true, false}));
+  EXPECT_EQ(seen->committed_key, "かわ");
+  EXPECT_EQ(seen->learning_revert_id, seen->committed_revert_id);
+}
+
+// The immutable candidate is the first one, but a normal rewriter inserts a
+// different top surface. Selection must be ranked against the *displayed*
+// candidate ordering rather than the immutable ordering.
+TEST_F(ConverterTest, VerifiedSuggestionUsesPostprocessedDefaultRank) {
+  auto recorder = std::make_unique<SuggestionLearningPresentationRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "くも", "くものそら", "雲の空");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("くも"),
+                              &segments);
+  EXPECT_EQ(seen->suggestion_view_calls, 1);
+  EXPECT_EQ(seen->learning_values,
+            (std::vector<std::string>{"雲の", "空"}));
+  EXPECT_EQ(seen->reranked, (std::vector<bool>{true, false}));
+}
+
+// The engine's final contextual reranker puts the plain particle before
+// the homophonous kanji after a noun-like segment. The learning view must
+// observe that displayed default, not the pre-rerank immutable ordering.
+TEST_F(ConverterTest, VerifiedSuggestionUsesFinalContextualDefaultRank) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "かわ", "かわのに", "河野に");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("かわ"),
+                              &segments);
+  EXPECT_EQ(seen->suggestion_view_calls, 1);
+  EXPECT_EQ(seen->learning_keys,
+            (std::vector<std::string>{"かわの", "に"}));
+  EXPECT_EQ(seen->learning_values,
+            (std::vector<std::string>{"河野", "に"}));
+  EXPECT_EQ(seen->reranked, (std::vector<bool>{false, false}));
+}
+
+// Two segment paths show the same entire surface, so the generic surface
+// matcher cannot prove a unique path. Explicit candidate-supplied boundaries
+// still disambiguate the pairs, but their RERANKED bits must come from the
+// *postprocessed* visible ranking, not the raw dictionary ordering.
+TEST_F(ConverterTest, VerifiedSuggestionAmbiguousPathUsesDisplayedRank) {
+  auto recorder = std::make_unique<SuggestionLearningPresentationRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "みず", "みずのいろ", "水の色");
+  Candidate* candidate = segments.mutable_conversion_segment(0)
+                             ->mutable_candidate(0);
+  candidate->inner_segment_boundary = BuildInnerSegmentBoundary(
+      {{9, 6, 9, 6}, {6, 3, 6, 3}}, candidate->key, candidate->value);
+  ASSERT_EQ(candidate->inner_segment_boundary.size(), 2);
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("みず"),
+                              &segments);
+  ASSERT_EQ(seen->suggestion_view_calls, 1);
+  ASSERT_EQ(seen->learning_keys,
+            (std::vector<std::string>{"みずの", "いろ"}));
+  ASSERT_EQ(seen->learning_values,
+            (std::vector<std::string>{"水の", "色"}));
+  // Native dictionary index for "水の" is 1; the visible index is 0.
+  EXPECT_EQ(seen->reranked, (std::vector<bool>{false, false}));
+  EXPECT_EQ(seen->committed_key, "みず");
+  EXPECT_EQ(seen->committed_value, "水の色");
+}
+
+// Fixed dictionary boundaries alone prove existence but not that the same
+// candidate path is offered by a normal full-reading conversion. Never force
+// unknown native indices into persistent user-segment preference history.
+TEST_F(ConverterTest, VerifiedSuggestionUnprovenFallbackRankKeepsCommit) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "みず", "みずのそら", "水の空");
+  Candidate* candidate = segments.mutable_conversion_segment(0)
+                             ->mutable_candidate(0);
+  candidate->inner_segment_boundary = BuildInnerSegmentBoundary(
+      {{9, 6, 9, 6}, {6, 3, 6, 3}}, candidate->key, candidate->value);
+  ASSERT_EQ(candidate->inner_segment_boundary.size(), 2);
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("みず"),
+                              &segments);
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 0);
+  EXPECT_EQ(seen->committed_key, "みず");
+  EXPECT_EQ(seen->committed_value, "水の空");
+}
+
+TEST_F(ConverterTest, SuggestionTopNativeCandidateIsNotReranked) {
+  auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+  auto* seen = recorder.get();
+  std::unique_ptr<Converter> converter =
+      MakeSuggestionLearningProbeConverter(std::move(recorder));
+  Segments segments;
+  AddSuggestionCandidate(&segments, "い", "いった", "行った");
+  converter->FinishConversion(MakeSuggestionLearningProbeRequest("い"),
+                              &segments);
+  EXPECT_EQ(seen->finish_calls, 1);
+  EXPECT_EQ(seen->suggestion_view_calls, 1);
+  EXPECT_EQ(seen->learning_keys, std::vector<std::string>{"いった"});
+  EXPECT_EQ(seen->reranked, std::vector<bool>{false});
+}
+
+TEST_F(ConverterTest, UnverifiedOrDisabledSuggestionUsesOriginalCommit) {
+  for (const bool enabled : {false, true}) {
+    auto recorder = std::make_unique<SuggestionLearningRecordingRewriter>();
+    auto* seen = recorder.get();
+    std::unique_ptr<Converter> converter =
+        MakeSuggestionLearningProbeConverter(std::move(recorder));
+    Segments segments;
+    AddSuggestionCandidate(&segments, "げん", "げんしょう", "現象");
+    if (enabled) {
+      // A correction is not safe to propagate into native segment history.
+      segments.mutable_conversion_segment(0)
+          ->mutable_candidate(0)->attributes |= Attribute::TYPING_CORRECTION;
+    }
+    const ConversionRequest request =
+        MakeSuggestionLearningProbeRequest("げん", enabled);
+    converter->FinishConversion(request, &segments);
+    EXPECT_EQ(seen->finish_calls, 1);
+    EXPECT_EQ(seen->suggestion_view_calls, 0);
+    EXPECT_EQ(seen->committed_key, "げん");
+  }
 }
 
 TEST_F(ConverterTest, FinishConversion_FullSentence) {

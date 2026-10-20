@@ -104,6 +104,8 @@ struct PrecompositionState {
 struct CompositionState {
   enum Commands {
     NONE = 0,
+    FORCE_ZENZ_LIVE_CORRECTION,
+    FORCE_ZENZ_LIVE_CORRECTION_WITHOUT_FEEDBACK,
     IME_OFF,
     IME_ON,
     INSERT_CHARACTER,
@@ -154,6 +156,10 @@ struct CompositionState {
 struct ConversionState {
   enum Commands {
     NONE = 0,
+    FORCE_ZENZ_LIVE_CORRECTION,
+    FORCE_ZENZ_LIVE_CORRECTION_WITHOUT_FEEDBACK,
+    REVERT_ZENZ_TO_MOZC,  // Restore the underlying ordinary conversion.
+    BACKSPACE,  // Edit the underlying reading, not the rendered surface.
     IME_OFF,
     IME_ON,
     INSERT_CHARACTER,  // Submit and Move to Composition status.
@@ -297,6 +303,21 @@ class KeyMapManager {
   bool GetCommandSequenceConversion(const commands::KeyEvent& key_event,
                                     CommandSequence* commands) const;
 
+  // Applies only while a Zenz correction is visibly presented. Unbound keys
+  // inherit the ordinary Conversion rule, preserving existing user keymaps.
+  // Live mode and Zenz presentation are separate axes.  An absent specialized
+  // binding inherits Conversion; |specialized_override| records whether a
+  // LiveConversion or ZenzConversion row actually supplied the command.
+  bool GetCommandSequenceLiveConversion(
+      const commands::KeyEvent& key_event, CommandSequence* commands,
+      bool* specialized_override = nullptr) const;
+  bool GetCommandSequenceZenzConversion(const commands::KeyEvent& key_event,
+                                        CommandSequence* commands,
+                                        bool* zenz_override = nullptr) const;
+  bool GetCommandSequenceZenzLiveConversion(
+      const commands::KeyEvent& key_event, CommandSequence* commands,
+      bool* specialized_override = nullptr) const;
+
   bool GetCommandSequenceZeroQuerySuggestion(
       const commands::KeyEvent& key_event,
       CommandSequence* commands) const;
@@ -425,6 +446,11 @@ class KeyMapManager {
   KeyMap<PrecompositionState> keymap_precomposition_;
   KeyMap<CompositionState> keymap_composition_;
   KeyMap<ConversionState> keymap_conversion_;
+  KeyMap<ConversionState> keymap_live_conversion_;
+
+  // While Zenz correction is visible, prefer this optional keymap.
+  // Otherwise fall back to keymap_conversion_.
+  KeyMap<ConversionState> keymap_zenz_conversion_;
 
   // enabled only if zero query suggestion is shown. Otherwise, inherit from
   // keymap_precomposition
@@ -442,46 +468,24 @@ class KeyMapManager {
 template <typename T>
 bool KeyMap<T>::GetCommand(const commands::KeyEvent& key_event,
                            CommandsType* command) const {
-  KeyInformation key;
+  for (const commands::KeyEvent& candidate :
+       KeyEventUtil::GetKeyEventLookupCandidates(key_event)) {
+    KeyInformation key;
+    if (!KeyEventUtil::GetKeyInformation(candidate, &key)) {
+      continue;
+    }
 
-  // First, try exact match without normalization so that explicit
-  // LeftShift / RightShift bindings can work.
-  if (KeyEventUtil::GetKeyInformation(key_event, &key)) {
     if (const auto it = keymap_.find(key); it != keymap_.end()) {
       *command = it->second;
       return true;
     }
 
-    if (KeyEventUtil::MaybeGetKeyStub(key_event, &key)) {
+    if (KeyEventUtil::MaybeGetKeyStub(candidate, &key)) {
       const auto it = keymap_.find(key);
       if (it != keymap_.end()) {
         *command = it->second;
         return true;
       }
-    }
-  }
-
-  // Fallback to normalized match so that existing generic shortcuts
-  // such as Shift Space keep working as before.
-  // Shortcut keys should be available as if CapsLock was not enabled like
-  // other IMEs such as MS-IME or ATOK. b/5627459
-  commands::KeyEvent normalized_key_event;
-  KeyEventUtil::NormalizeModifiers(key_event, &normalized_key_event);
-
-  if (!KeyEventUtil::GetKeyInformation(normalized_key_event, &key)) {
-    return false;
-  }
-
-  if (const auto it = keymap_.find(key); it != keymap_.end()) {
-    *command = it->second;
-    return true;
-  }
-
-  if (KeyEventUtil::MaybeGetKeyStub(normalized_key_event, &key)) {
-    const auto it = keymap_.find(key);
-    if (it != keymap_.end()) {
-      *command = it->second;
-      return true;
     }
   }
 
@@ -491,46 +495,25 @@ bool KeyMap<T>::GetCommand(const commands::KeyEvent& key_event,
 template <typename T>
 bool KeyMap<T>::GetCommandSequence(const commands::KeyEvent& key_event,
                                    CommandSequence* commands) const {
-  KeyInformation key;
+  for (const commands::KeyEvent& candidate :
+       KeyEventUtil::GetKeyEventLookupCandidates(key_event)) {
+    KeyInformation key;
+    if (!KeyEventUtil::GetKeyInformation(candidate, &key)) {
+      continue;
+    }
 
-  // First, try exact match without normalization so that explicit
-  // LeftShift / RightShift bindings can work.
-  if (KeyEventUtil::GetKeyInformation(key_event, &key)) {
     if (const auto it = sequence_keymap_.find(key);
         it != sequence_keymap_.end()) {
       *commands = it->second;
       return true;
     }
 
-    if (KeyEventUtil::MaybeGetKeyStub(key_event, &key)) {
+    if (KeyEventUtil::MaybeGetKeyStub(candidate, &key)) {
       const auto it = sequence_keymap_.find(key);
       if (it != sequence_keymap_.end()) {
         *commands = it->second;
         return true;
       }
-    }
-  }
-
-  // Fallback to normalized match so that existing generic shortcuts
-  // such as Shift Space keep working as before.
-  commands::KeyEvent normalized_key_event;
-  KeyEventUtil::NormalizeModifiers(key_event, &normalized_key_event);
-
-  if (!KeyEventUtil::GetKeyInformation(normalized_key_event, &key)) {
-    return false;
-  }
-
-  if (const auto it = sequence_keymap_.find(key);
-      it != sequence_keymap_.end()) {
-    *commands = it->second;
-    return true;
-  }
-
-  if (KeyEventUtil::MaybeGetKeyStub(normalized_key_event, &key)) {
-    const auto it = sequence_keymap_.find(key);
-    if (it != sequence_keymap_.end()) {
-      *commands = it->second;
-      return true;
     }
   }
 

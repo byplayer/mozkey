@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
+#include <thread>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,7 +63,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       return true;
     };
 
-    if (argument == "-m") {
+    if (argument == "--mozkey-zenz-dual-liveness-v1") {
+      if (i != 1) return false;
+    } else if (argument == "-m") {
       if (!take_value(&options->model_path)) return false;
     } else if (argument == "-c") {
       if (i + 1 >= argc || !ParseInteger(argv[++i], &options->context_size)) {
@@ -266,7 +270,46 @@ int RunServer(const Options& options) {
 
 }  // namespace
 
+// Match the pinned llama-server's test-only lifetime protocol.  This does
+// NOT replace real-model E2E: it only exercises guard/scorer child semantics.
+void MockWatchLifetimeFds() {
+  pollfd fds[2] = {};
+  fds[0].fd = 23;
+  fds[0].events = POLLIN | POLLHUP;
+  fds[1].fd = 24;
+  fds[1].events = POLLIN | POLLHUP;
+  for (;;) {
+    const int rc = ::poll(fds, 2, -1);
+    if (rc < 0 && errno == EINTR) continue;
+    if (rc < 0 || fds[0].revents != 0 || fds[1].revents != 0) {
+      ::_exit(73);
+    }
+  }
+}
+
 int main(int argc, char** argv) {
+  if (argc < 2 || std::strcmp(argv[1],
+      "--mozkey-zenz-dual-liveness-v1") != 0) {
+    return 73;
+  }
+  for (int fd : {23, 24}) {
+    const int flags = ::fcntl(fd, F_GETFL);
+    struct stat st = {};
+    if (flags < 0 || (flags & O_ACCMODE) != O_RDONLY ||
+        ::fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode)) {
+      return 73;
+    }
+    const int old_flags = ::fcntl(fd, F_GETFD);
+    if (old_flags < 0 ||
+        ::fcntl(fd, F_SETFD, old_flags | FD_CLOEXEC) != 0) {
+      return 73;
+    }
+  }
+  try {
+    std::thread(MockWatchLifetimeFds).detach();
+  } catch (...) {
+    return 73;
+  }
   std::signal(SIGTERM, HandleSignal);
   std::signal(SIGINT, HandleSignal);
 
@@ -289,6 +332,9 @@ int main(int argc, char** argv) {
     diagnostic.append("\ndiagnostic-tail\n");
     WriteAll(STDERR_FILENO, diagnostic);
     return 12;
+  }
+  if (options.test_mode == "ignore-term") {
+    std::signal(SIGTERM, SIG_IGN);
   }
   return RunServer(options);
 }

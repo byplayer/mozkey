@@ -3,6 +3,7 @@
 
 #include <sys/types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -15,6 +16,7 @@ namespace zenz_scorer {
 
 struct LlamaServerProcessOptions {
   std::string executable_path;
+  std::string guard_executable_path;
   std::string model_path;
   int context_size = 256;
   int threads = 4;
@@ -43,7 +45,8 @@ struct LlamaServerProcessOptions {
 // its own process group, and waits until an authenticated /completion request
 // succeeds.  Child output is drained continuously into a bounded in-memory
 // tail so startup failures remain diagnosable without allowing unbounded logs.
-// Stop() terminates and reaps the whole child process group.
+// Stop() closes the scorer lifetime pipe and reaps the guard. The guard
+// terminates and reaps the llama-server process group.
 class LlamaServerProcess final {
  public:
   explicit LlamaServerProcess(LlamaServerProcessOptions options);
@@ -58,7 +61,8 @@ class LlamaServerProcess final {
   bool running();
   int port() const { return port_; }
   const std::string& api_key() const { return api_key_; }
-  pid_t pid() const { return pid_; }
+  pid_t pid() const { return pid_; }  // Guard PID.
+  pid_t worker_pid() const { return worker_pid_; }
 
  private:
   bool Spawn(std::string* error);
@@ -71,10 +75,15 @@ class LlamaServerProcess final {
   void ResetState();
 
   LlamaServerProcessOptions options_;
-  pid_t pid_ = -1;
+  pid_t pid_ = -1;  // Direct child is the guard, which owns llama-server.
+  pid_t worker_pid_ = -1;
+  int lifetime_write_fd_ = -1;
   int port_ = 0;
   std::string api_key_;
   std::thread output_thread_;
+  // Permits bounded shutdown if the guard exits but its orphaned worker
+  // still holds the stdout/stderr pipe open.
+  std::atomic<bool> stop_output_capture_{false};
   std::mutex output_mutex_;
   std::string output_tail_;
 };

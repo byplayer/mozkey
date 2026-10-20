@@ -1669,7 +1669,15 @@ UserHistoryPredictor::EntryPriorityQueue
 UserHistoryPredictor::CreateEntryQueueFromHistoryForConversion(
     const ConversionRequest& request, const Entry* absl_nullable prev_entry,
     size_t max_entry_queue_size) const {
-  const std::string request_key = request.composer().GetQueryForConversion();
+  // The ordinary conversion request key matches the Composer query. The
+  // verified-suggestion learning probe instead supplies a full reading via
+  // SetKey while retaining the original, still-short Composer snapshot.
+  // Select the explicit key only for that probe; preserve legacy behavior for
+  // every other conversion and all prediction/suggestion requests.
+  const std::string request_key =
+      request.options().use_explicit_key_for_user_history_conversion
+          ? std::string(request.key())
+          : request.composer().GetQueryForConversion();
   EntryPriorityQueue entry_queue;
 
   storage_.ForEach([&](uint64_t fp, const Entry& entry) {

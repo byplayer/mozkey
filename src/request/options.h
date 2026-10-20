@@ -108,6 +108,23 @@ struct ConversionOptions {
   // window. Ordinary Mozc conversions leave this false.
   bool reversible_external_learning = false;
 
+  // The candidate was explicitly accepted from the full desktop suggestion
+  // list. Only the legacy user-segment-history rewriter may use a separately
+  // verified learning view. No other Finish hooks or result paths change.
+  bool enable_verified_suggestion_segment_learning = false;
+
+  // When reproducing ordinary conversion for suggestion learning, do not
+  // consume a pending undo's delayed history cleanup. Normal requests leave
+  // this false, so their existing pending-revert semantics are unchanged.
+  bool skip_pending_revert_for_suggestion_learning = false;
+
+  // The temporary full-reading conversion used for verified suggestion
+  // learning keeps the user's original (prefix) ComposerData for input mode
+  // and context. UserHistoryPredictor::Convert must search using the explicit
+  // full request.key(), not the still-incomplete composer conversion query.
+  // Normal conversion and prediction leave this false.
+  bool use_explicit_key_for_user_history_conversion = false;
+
   // If true, enable kana modifier insensitive conversion.
   bool kana_modifier_insensitive_conversion = true;
 

@@ -92,6 +92,21 @@ class RewriterInterface {
   virtual void Finish(const ConversionRequest& request,
                       const Segments& segments) {}
 
+  // Before probing the visible ranking for a new suggestion commit, flush any
+  // pending history undo. Default rewriters have no deferred undo storage.
+  // This is invoked only for the verified suggestion-learning path.
+  virtual void PrepareForSuggestionLearning(const ConversionRequest& request) {}
+
+  // An opt-in suggestion commit can provide a separately verified view of
+  // the same committed text, with native reading/segment correspondence.
+  // The default implementation must learn the original commit exactly once.
+  // Only the user-segment-history rewriter consumes the optional view.
+  virtual void FinishWithSuggestionLearningSegments(
+      const ConversionRequest& request, const Segments& committed_segments,
+      const Segments* suggestion_learning_segments) {
+    Finish(request, committed_segments);
+  }
+
   // Reverts the last Finish operation.
   virtual void Revert(const Segments& segments) {}
 

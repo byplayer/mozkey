@@ -51,6 +51,16 @@ std::string TestHelperPath() {
                   "zenz_scorer/llama_server_process_test_helper");
 }
 
+std::string GuardPath() {
+  const char* test_srcdir = std::getenv("TEST_SRCDIR");
+  const char* test_workspace = std::getenv("TEST_WORKSPACE");
+  if (test_srcdir == nullptr || test_workspace == nullptr) {
+    return "";
+  }
+  return JoinPath(JoinPath(test_srcdir, test_workspace),
+                  "zenz_scorer/mozc_zenz_guard");
+}
+
 class TemporaryModel final {
  public:
   TemporaryModel() {
@@ -151,6 +161,7 @@ PosixScorerRuntimeOptions MakeOptions(const std::string& socket_path,
   PosixScorerRuntimeOptions options;
   options.socket_path = socket_path;
   options.llama_server.executable_path = TestHelperPath();
+  options.llama_server.guard_executable_path = GuardPath();
   options.llama_server.model_path = model_path;
   options.llama_server.context_size = 128;
   options.llama_server.threads = 2;

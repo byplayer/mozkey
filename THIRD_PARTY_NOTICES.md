@@ -42,9 +42,15 @@ notes.
 
 ### dic-nico-intersection-pixiv
 
-* Source: [https://github.com/ncaq/dic-nico-intersection-pixiv](https://github.com/ncaq/dic-nico-intersection-pixiv)
+* Default source: [Niccori250k fork](https://github.com/Niccori250k/dic-nico-intersection-pixiv),
+  following the latest available `master` revision at each normal import.
+* Original project: [ncaq/dic-nico-intersection-pixiv](https://github.com/ncaq/dic-nico-intersection-pixiv).
+  The importer also supports the original project's current `master` via `-Source ncaq`.
 * Used for: nico/pixiv delta dictionary
-* License note: upstream states that the code is MIT licensed.
+* Provenance: each import resolves a single upstream commit and records its
+  revision and downloaded SHA-256 in a local generated source manifest.
+* License note: original and fork state that code is MIT licensed; this does
+  not itself establish redistribution rights for scraped dictionary contents.
 * Data note: upstream describes the dictionary as using data from Niconico
   Encyclopedia and Pixiv Encyclopedia. Treat redistribution as review-required
   because the generated data is derived from external web sources.

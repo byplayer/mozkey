@@ -454,6 +454,38 @@ TEST_F(ComposerTest, GetStringFunctions) {
   EXPECT_EQ(composer_->GetQueryForPrediction(), "sk");
 }
 
+TEST_F(ComposerTest, CustomRomanTableAmbiguousPunctuationPreedit) {
+  // Regression: '.' was displayed and submitted as '．' even though
+  // the custom roman table requested '。' with DisplayAmbiguousResult.
+  config_->set_preedit_method(Config::ROMAN);
+  config_->set_punctuation_method(Config::TOUTEN_KUTEN);
+  config_->set_custom_roman_table(
+      ".\t。\t\tDisplayAmbiguousResult\n"
+      "..\t。。\t\tDisplayAmbiguousResult\n"
+      "...\t…\t\tDisplayAmbiguousResult\n"
+      "a\tあ\n");
+  ASSERT_TRUE(table_->InitializeWithRequestAndConfig(*request_, *config_));
+
+  struct TestCase {
+    absl::string_view input;
+    absl::string_view expected;
+  };
+  constexpr TestCase cases[] = {
+      {".", "。"}, {"..", "。。"}, {"...", "…"}, {".a", "。あ"}};
+  for (const auto& test : cases) {
+    composer_->Reset();
+    for (const char key : test.input) {
+      composer_->InsertCharacter(std::string(1, key));
+    }
+    EXPECT_EQ(composer_->GetStringForPreedit(), test.expected)
+        << test.input;
+    EXPECT_EQ(composer_->GetStringForSubmission(), test.expected)
+        << test.input;
+    EXPECT_EQ(composer_->GetQueryForConversion(), test.expected)
+        << test.input;
+  }
+}
+
 TEST_F(ComposerTest, GetQueryForPredictionHalfAscii) {
   // Dummy setup of romanji table.
   table_->AddRule("he", "へ", "");

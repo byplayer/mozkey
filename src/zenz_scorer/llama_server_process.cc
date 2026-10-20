@@ -21,6 +21,7 @@
 #include <crt_externs.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/socket.h>
@@ -29,6 +30,7 @@
 #include <unistd.h>
 
 #include "zenz_scorer/llama_http_client.h"
+#include "zenz_scorer/llama_server_guard_protocol.h"
 
 namespace mozc {
 namespace zenz_scorer {
@@ -45,9 +47,10 @@ constexpr int kMinimumProbeIntervalMsec = 10;
 constexpr int kMaximumProbeIntervalMsec = 5000;
 constexpr int kMinimumProbeTimeoutMsec = 50;
 constexpr int kMaximumProbeTimeoutMsec = 30000;
-constexpr int kGracefulStopTimeoutMsec = 2000;
 constexpr int kStopPollIntervalMsec = 25;
 constexpr size_t kMaximumCapturedOutputBytes = 4096;
+constexpr int kGuardStartupTimeoutMsec = 5000;
+constexpr int kGuardShutdownTimeoutMsec = 4500;
 constexpr char kReadinessPrompt[] =
     "\xEE\xB8\x82\xEE\xB8\x80\xE3\x83\x86\xE3\x82\xB9\xE3\x83\x88"
     "\xEE\xB8\x81";
@@ -103,6 +106,65 @@ bool CreateOutputPipe(int output_pipe[2], std::string* error) {
     return false;
   }
   return true;
+}
+
+// A fixed, explicit FD mapping avoids dependence on inherited process state.
+// Sources above 63 cannot be overwritten by destination FDs 20 and 21.
+bool MoveFdToGuardSource(int* fd) {
+  int copy;
+  do {
+    copy = ::fcntl(*fd, F_DUPFD_CLOEXEC, 64);
+  } while (copy < 0 && errno == EINTR);
+  if (copy < 0) {
+    return false;
+  }
+  ::close(*fd);
+  *fd = copy;
+  return true;
+}
+
+void ClosePipe(int fd[2]) {
+  for (int i = 0; i < 2; ++i) {
+    if (fd[i] >= 0) {
+      ::close(fd[i]);
+      fd[i] = -1;
+    }
+  }
+}
+
+// Startup is always bounded. The guard sends one fixed-size atomic message
+// only after it has created its own directly managed worker process.
+bool ReadGuardStartup(int fd, GuardStartupMessage* message) {
+  auto* out = reinterpret_cast<char*>(message);
+  size_t received = 0;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kGuardStartupTimeoutMsec);
+  while (received < sizeof(*message)) {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now()).count();
+    if (remaining <= 0) {
+      return false;
+    }
+    pollfd descriptor = {};
+    descriptor.fd = fd;
+    descriptor.events = POLLIN;
+    int poll_result;
+    do {
+      poll_result = ::poll(&descriptor, 1, static_cast<int>(remaining));
+    } while (poll_result < 0 && errno == EINTR);
+    if (poll_result <= 0) {
+      return false;
+    }
+    const ssize_t n = ::read(fd, out + received, sizeof(*message) - received);
+    if (n > 0) {
+      received += static_cast<size_t>(n);
+    } else if (n == 0) {
+      return false;
+    } else if (errno != EINTR) {
+      return false;
+    }
+  }
+  return message->ok == 1 && message->worker_pid > 0;
 }
 
 std::string SanitizeCapturedOutput(std::string output,
@@ -194,6 +256,11 @@ bool ValidateOptions(const LlamaServerProcessOptions& options,
       !ValidateModel(options.model_path, error)) {
     return false;
   }
+  std::string guard_error;
+  if (!ValidateExecutable(options.guard_executable_path, &guard_error)) {
+    *error = "guard_" + guard_error;
+    return false;
+  }
   if (options.context_size < kMinimumContextSize ||
       options.context_size > kMaximumContextSize) {
     *error = "invalid_context_size";
@@ -219,6 +286,12 @@ bool ValidateOptions(const LlamaServerProcessOptions& options,
     return false;
   }
   for (const std::string& argument : options.additional_args) {
+    // API key is controlled by Mozkey; never accept a second key in argv.
+    if (argument == "--api-key" ||
+        argument.starts_with("--api-key=")) {
+      *error = "api_key_override_rejected";
+      return false;
+    }
     if (ContainsNul(argument)) {
       *error = "invalid_additional_argument";
       return false;
@@ -402,26 +475,77 @@ bool LlamaServerProcess::Spawn(std::string* error) {
   std::vector<std::string> arguments =
       BuildArguments(options_, port_, api_key_);
   std::vector<char*> argv;
-  argv.reserve(arguments.size() + 1);
-  for (std::string& argument : arguments) {
-    argv.push_back(argument.data());
+  argv.reserve(arguments.size() + 3);
+  argv.push_back(const_cast<char*>(options_.guard_executable_path.c_str()));
+  argv.push_back(const_cast<char*>("--"));
+  // Keep the raw token out of the guard's argv.  Only llama-server
+  // receives it in its argv, after the guard reads the private socket.
+  for (size_t i = 0; i < arguments.size(); ++i) {
+    if (i > 0 && arguments[i - 1] == "--api-key") {
+      argv.push_back(const_cast<char*>(kGuardApiKeyPlaceholder));
+    } else {
+      argv.push_back(arguments[i].data());
+    }
   }
   argv.push_back(nullptr);
 
   int output_pipe[2] = {-1, -1};
+  int lifetime_pipe[2] = {-1, -1};
+  int startup_pipe[2] = {-1, -1};
+  int key_channel[2] = {-1, -1};
   if (!CreateOutputPipe(output_pipe, error)) {
     return false;
   }
+  if (::pipe(lifetime_pipe) != 0 || ::pipe(startup_pipe) != 0 ||
+      ::socketpair(AF_UNIX, SOCK_STREAM, 0, key_channel) != 0 ||
+      !MoveFdToGuardSource(&output_pipe[0]) ||
+      !MoveFdToGuardSource(&output_pipe[1]) ||
+      !MoveFdToGuardSource(&lifetime_pipe[0]) ||
+      !MoveFdToGuardSource(&lifetime_pipe[1]) ||
+      !MoveFdToGuardSource(&startup_pipe[0]) ||
+      !MoveFdToGuardSource(&startup_pipe[1]) ||
+      !MoveFdToGuardSource(&key_channel[0]) ||
+      !MoveFdToGuardSource(&key_channel[1])) {
+    ClosePipe(output_pipe);
+    ClosePipe(lifetime_pipe);
+    ClosePipe(startup_pipe);
+    ClosePipe(key_channel);
+    *error = "guard_pipe_setup_failed";
+    return false;
+  }
+
+  // macOS SO_NOSIGPIPE prevents a dead guard from terminating the scorer
+  // while transferring a 64-byte key. No global signal handler is changed.
+#if defined(SO_NOSIGPIPE)
+  const int enabled = 1;
+  if (::setsockopt(key_channel[0], SOL_SOCKET, SO_NOSIGPIPE,
+                   &enabled, sizeof(enabled)) != 0) {
+    ClosePipe(output_pipe);
+    ClosePipe(lifetime_pipe);
+    ClosePipe(startup_pipe);
+    ClosePipe(key_channel);
+    *error = "guard_key_channel_nosigpipe_failed";
+    return false;
+  }
+#else
+  ClosePipe(output_pipe);
+  ClosePipe(lifetime_pipe);
+  ClosePipe(startup_pipe);
+  ClosePipe(key_channel);
+  *error = "guard_key_channel_nosigpipe_unavailable";
+  return false;
+#endif
 
   posix_spawn_file_actions_t actions;
   int result = ::posix_spawn_file_actions_init(&actions);
   if (result != 0) {
-    ::close(output_pipe[0]);
-    ::close(output_pipe[1]);
-    *error = "spawn_file_actions_init_failed_" + std::to_string(result);
+    ClosePipe(output_pipe);
+    ClosePipe(lifetime_pipe);
+    ClosePipe(startup_pipe);
+    ClosePipe(key_channel);
+    *error = "guard_file_actions_init_failed_" + std::to_string(result);
     return false;
   }
-
   result = ::posix_spawn_file_actions_adddup2(
       &actions, output_pipe[1], STDOUT_FILENO);
   if (result == 0) {
@@ -429,76 +553,104 @@ bool LlamaServerProcess::Spawn(std::string* error) {
         &actions, output_pipe[1], STDERR_FILENO);
   }
   if (result == 0) {
-    result = ::posix_spawn_file_actions_addclose(&actions, output_pipe[0]);
+    result = ::posix_spawn_file_actions_adddup2(
+        &actions, lifetime_pipe[0], kGuardLifetimeFd);
   }
   if (result == 0) {
-    result = ::posix_spawn_file_actions_addclose(&actions, output_pipe[1]);
+    result = ::posix_spawn_file_actions_adddup2(
+        &actions, startup_pipe[1], kGuardStartupFd);
   }
-  if (result != 0) {
-    ::posix_spawn_file_actions_destroy(&actions);
-    ::close(output_pipe[0]);
-    ::close(output_pipe[1]);
-    *error = "spawn_redirect_failed_" + std::to_string(result);
-    return false;
+  if (result == 0) {
+    result = ::posix_spawn_file_actions_adddup2(
+        &actions, key_channel[1], kGuardApiKeyFd);
   }
-
+  // Explicitly remove unneeded pipe ends in the guard. The worker will
+  // separately close kGuardLifetimeFd and kGuardStartupFd before exec.
+  for (int fd : {output_pipe[0], output_pipe[1], lifetime_pipe[0],
+                 lifetime_pipe[1], startup_pipe[0], startup_pipe[1],
+                 key_channel[0], key_channel[1]}) {
+    if (result == 0) {
+      result = ::posix_spawn_file_actions_addclose(&actions, fd);
+    }
+  }
   posix_spawnattr_t attributes;
-  result = ::posix_spawnattr_init(&attributes);
-  if (result != 0) {
-    ::posix_spawn_file_actions_destroy(&actions);
-    ::close(output_pipe[0]);
-    ::close(output_pipe[1]);
-    *error = "spawn_attr_init_failed_" + std::to_string(result);
-    return false;
+  bool attr_initialized = false;
+  if (result == 0) {
+    result = ::posix_spawnattr_init(&attributes);
+    attr_initialized = result == 0;
   }
-
-  short flags = POSIX_SPAWN_SETPGROUP;
+  if (result == 0) {
+    short flags = POSIX_SPAWN_SETPGROUP;
 #if defined(POSIX_SPAWN_CLOEXEC_DEFAULT)
-  flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
 #endif
-  result = ::posix_spawnattr_setflags(&attributes, flags);
+    result = ::posix_spawnattr_setflags(&attributes, flags);
+  }
   if (result == 0) {
     result = ::posix_spawnattr_setpgroup(&attributes, 0);
   }
-  if (result != 0) {
-    ::posix_spawnattr_destroy(&attributes);
-    ::posix_spawn_file_actions_destroy(&actions);
-    ::close(output_pipe[0]);
-    ::close(output_pipe[1]);
-    *error = "spawn_attr_setup_failed_" + std::to_string(result);
-    return false;
+  pid_t guard_pid = -1;
+  if (result == 0) {
+    result = ::posix_spawn(&guard_pid, options_.guard_executable_path.c_str(),
+                           &actions, &attributes, argv.data(), *_NSGetEnviron());
   }
-
-  pid_t child_pid = -1;
-  result = ::posix_spawn(&child_pid, options_.executable_path.c_str(), &actions,
-                         &attributes, argv.data(), *_NSGetEnviron());
-
-  ::posix_spawnattr_destroy(&attributes);
+  if (attr_initialized) {
+    ::posix_spawnattr_destroy(&attributes);
+  }
   ::posix_spawn_file_actions_destroy(&actions);
   ::close(output_pipe[1]);
   output_pipe[1] = -1;
-
-  if (result != 0 || child_pid <= 0) {
-    ::close(output_pipe[0]);
-    *error = "posix_spawn_failed_" + std::to_string(result);
+  ::close(lifetime_pipe[0]);
+  lifetime_pipe[0] = -1;
+  ::close(startup_pipe[1]);
+  startup_pipe[1] = -1;
+  ::close(key_channel[1]);
+  key_channel[1] = -1;
+  if (result != 0 || guard_pid <= 0) {
+    ClosePipe(output_pipe);
+    ClosePipe(lifetime_pipe);
+    ClosePipe(startup_pipe);
+    ClosePipe(key_channel);
+    *error = "guard_spawn_failed_" + std::to_string(result);
     return false;
   }
 
-  pid_ = child_pid;
+  pid_ = guard_pid;
+  lifetime_write_fd_ = lifetime_pipe[1];
+  lifetime_pipe[1] = -1;
+  bool key_sent = true;
+  size_t key_bytes = 0;
+  while (key_bytes < api_key_.size()) {
+    const ssize_t sent = ::send(key_channel[0],
+        api_key_.data() + key_bytes, api_key_.size() - key_bytes, 0);
+    if (sent > 0) {
+      key_bytes += static_cast<size_t>(sent);
+    } else if (sent < 0 && errno == EINTR) {
+      continue;
+    } else {
+      key_sent = false;
+      break;
+    }
+  }
+  ClosePipe(key_channel);
+  GuardStartupMessage message;
+  const bool started = key_sent &&
+      ReadGuardStartup(startup_pipe[0], &message);
+  ClosePipe(startup_pipe);
+  if (!started) {
+    // Closing the lifetime pipe initiates the guard's normal child cleanup.
+    Stop();
+    ClosePipe(output_pipe);
+    *error = "guard_worker_start_failed";
+    return false;
+  }
+  worker_pid_ = message.worker_pid;
   try {
     output_thread_ =
         std::thread(&LlamaServerProcess::CaptureOutput, this, output_pipe[0]);
   } catch (...) {
-    ::close(output_pipe[0]);
-    if (::kill(-child_pid, SIGKILL) != 0 && errno != ESRCH) {
-      ::kill(child_pid, SIGKILL);
-    }
-    int status = 0;
-    pid_t wait_result;
-    do {
-      wait_result = ::waitpid(child_pid, &status, 0);
-    } while (wait_result < 0 && errno == EINTR);
-    pid_ = -1;
+    ClosePipe(output_pipe);
+    Stop();
     *error = "output_capture_thread_failed";
     return false;
   }
@@ -602,19 +754,20 @@ bool LlamaServerProcess::running() {
 }
 
 void LlamaServerProcess::Stop() {
+  // Never send a signal to the worker from the scorer. The guard owns the
+  // worker's PID and process group, and observes lifetime EOF even on SIGKILL.
+  if (lifetime_write_fd_ >= 0) {
+    ::close(lifetime_write_fd_);
+    lifetime_write_fd_ = -1;
+  }
   if (pid_ <= 0) {
     JoinOutputCapture();
     ResetState();
     return;
   }
-
-  const pid_t child_pid = pid_;
-  if (::kill(-child_pid, SIGTERM) != 0 && errno != ESRCH) {
-    ::kill(child_pid, SIGTERM);
-  }
-
+  const pid_t guard_pid = pid_;
   const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(kGracefulStopTimeoutMsec);
+                        std::chrono::milliseconds(kGuardShutdownTimeoutMsec);
   while (std::chrono::steady_clock::now() < deadline) {
     int status = 0;
     if (ReapIfExited(&status)) {
@@ -625,17 +778,28 @@ void LlamaServerProcess::Stop() {
     std::this_thread::sleep_for(
         std::chrono::milliseconds(kStopPollIntervalMsec));
   }
-
-  if (::kill(-child_pid, SIGKILL) != 0 && errno != ESRCH) {
-    ::kill(child_pid, SIGKILL);
+  // Emergency fallback for an unresponsive guard. This cannot guarantee
+  // worker cleanup if the guard is fatally broken; it is not used on the
+  // expected graceful or scorer-SIGKILL paths.
+  ::kill(guard_pid, SIGTERM);
+  const auto term_deadline = std::chrono::steady_clock::now() +
+                             std::chrono::milliseconds(1000);
+  while (std::chrono::steady_clock::now() < term_deadline) {
+    int status = 0;
+    if (ReapIfExited(&status)) {
+      JoinOutputCapture();
+      ResetState();
+      return;
+    }
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(kStopPollIntervalMsec));
   }
-
+  ::kill(guard_pid, SIGKILL);
   int status = 0;
   pid_t result;
   do {
-    result = ::waitpid(child_pid, &status, 0);
+    result = ::waitpid(guard_pid, &status, 0);
   } while (result < 0 && errno == EINTR);
-
   pid_ = -1;
   JoinOutputCapture();
   ResetState();
@@ -644,6 +808,26 @@ void LlamaServerProcess::Stop() {
 void LlamaServerProcess::CaptureOutput(int fd) {
   std::array<char, 1024> buffer = {};
   while (true) {
+    // Even if a guard unexpectedly dies while its worker survives, Join must
+    // never hang on an inherited stdout/stderr pipe that still has a writer.
+    pollfd descriptor = {};
+    descriptor.fd = fd;
+    descriptor.events = POLLIN | POLLHUP;
+    int ready;
+    do {
+      ready = ::poll(&descriptor, 1,
+                     stop_output_capture_.load() ? 0 : 100);
+    } while (ready < 0 && errno == EINTR &&
+             !stop_output_capture_.load());
+    if (ready < 0) {
+      break;
+    }
+    if (ready == 0) {
+      if (stop_output_capture_.load()) {
+        break;
+      }
+      continue;
+    }
     const ssize_t result = ::read(fd, buffer.data(), buffer.size());
     if (result > 0) {
       const size_t bytes = static_cast<size_t>(result);
@@ -669,12 +853,14 @@ void LlamaServerProcess::CaptureOutput(int fd) {
 }
 
 void LlamaServerProcess::JoinOutputCapture() {
+  stop_output_capture_.store(true);
   if (output_thread_.joinable()) {
     output_thread_.join();
   }
 }
 
 void LlamaServerProcess::ClearCapturedOutput() {
+  stop_output_capture_.store(false);
   std::lock_guard<std::mutex> lock(output_mutex_);
   output_tail_.clear();
 }
@@ -696,6 +882,11 @@ void LlamaServerProcess::AppendCapturedOutput(std::string_view api_key,
 
 void LlamaServerProcess::ResetState() {
   pid_ = -1;
+  worker_pid_ = -1;
+  if (lifetime_write_fd_ >= 0) {
+    ::close(lifetime_write_fd_);
+    lifetime_write_fd_ = -1;
+  }
   port_ = 0;
   std::fill(api_key_.begin(), api_key_.end(), '\0');
   api_key_.clear();

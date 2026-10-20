@@ -231,7 +231,7 @@ def Codesign(top_dir: str, identity: str) -> None:
       util.RunOrDie(codesign)
 
   # Codesign the raw Zenz Mach-O helpers before signing their parent app.
-  zenz_helper_names = frozenset(['llama-server', 'mozc_zenz_scorer'])
+  zenz_helper_names = frozenset(['llama-server', 'mozc_zenz_scorer', 'mozc_zenz_guard'])
   for cur_dir, _, files in os.walk(top_dir):  # symbolic links are not followed.
     if os.path.basename(cur_dir) != 'ZenzRuntime':
       continue

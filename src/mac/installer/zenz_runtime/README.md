@@ -247,6 +247,8 @@ bazelisk \
 package. Without it, the generic clean-checkout package build intentionally
 does not refer to the Git-excluded runtime/model/build-contract assets.
 
+**This example is intentionally a guarded, non-installable PKG build.** For an audited package explicitly intended for installation, add `--define=MOZKEY_INSTALLABLE=1` alongside `--config=oss_macos`; the runtime flag alone does not permit installation. Verify the extracted preinstall and receipt version before use. See [macOS installer regression tests](../../MOZKEY_MACOS_INSTALL_TESTING.md) for safety conditions, orphan-receipt recovery, and known input-source visibility limitations.
+
 A successful Bazel build alone is not a release gate. The final `.pkg` must
 still be expanded and validated for the actual packaged Universal executables,
 deployment targets, model and license identities, embedded build contract,

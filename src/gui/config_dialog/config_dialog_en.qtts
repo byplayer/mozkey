@@ -5,6 +5,11 @@
     <name>ConfigDialog</name>
     <message>
         <location filename="config_dialog.ui" line="0"/>
+        <source>Input Appearance</source>
+        <translation>Input Appearance</translation>
+    </message>
+    <message>
+        <location filename="config_dialog.ui" line="0"/>
         <source>未確定文字の表示色</source>
         <translation>Preedit display colors</translation>
     </message>
@@ -507,6 +512,11 @@
     </message>
     <message>
         <location filename="config_dialog.cc" line="0"/>
+        <source>Monochrome (Light/Dark)</source>
+        <translation>Monochrome (Light/Dark)</translation>
+    </message>
+    <message>
+        <location filename="config_dialog.cc" line="0"/>
         <source>Monochrome (Black)</source>
         <translation>Monochrome (Black)</translation>
     </message>
@@ -539,6 +549,11 @@
         <location filename="config_dialog.ui" line="0"/>
         <source>Zenz ライブ補正</source>
         <translation>Zenz live correction</translation>
+    </message>
+    <message>
+        <location filename="config_dialog.ui" line="0"/>
+        <source>Zenz 補正中の文字</source>
+        <translation>Text being corrected by Zenz</translation>
     </message>
     <message>
         <location filename="config_dialog.ui" line="0"/>
@@ -779,6 +794,18 @@
     <message>
         <location filename="keybinding_editor.ui" line="92"/>
         <source>Input key assignments:</source>
+        <translation></translation>
+    </message>
+    <message>
+        <source>Either side</source>
+        <translation></translation>
+    </message>
+    <message>
+        <source>Left only</source>
+        <translation></translation>
+    </message>
+    <message>
+        <source>Right only</source>
         <translation></translation>
     </message>
 </context>
@@ -1674,6 +1701,14 @@ The current Windows default IME override will be saved so it can be restored lat
     <message>
         <location filename="keymap_editor.cc" line="473"/>
         <source>Do you want to overwrite the current keymaps?</source>
+        <translation></translation>
+    </message>
+    <message>
+        <source>Conflicting key assignments:
+%1 -&gt; %2
+%3 -&gt; %4
+
+These assignments can match the same physical key input. Choose non-overlapping left/right conditions.</source>
         <translation></translation>
     </message>
 </context>

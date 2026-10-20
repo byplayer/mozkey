@@ -196,18 +196,28 @@ bool EngineConverter::Convert(const composer::Composer& composer,
                               const commands::Context& context,
                               const ConversionPreferences& preferences) {
   DCHECK(CheckState(COMPOSITION | SUGGESTION | CONVERSION));
+  focused_suggestion_for_learning_ = false;
 
   DCHECK(request_);
   DCHECK(config_);
   ConversionRequest::Options options;
   options.enable_user_history_for_conversion = preferences.use_history;
   SetRequestType(ConversionRequest::CONVERSION, options);
+  // Keep this override request-local. Do not mutate the shared config or
+  // disable native Mozc user history while bypassing Zenz feedback.
+  config::Config request_config;
+  const config::Config* effective_config = config_.get();
+  if (preferences.ignore_zenz_feedback) {
+    request_config = *config_;
+    request_config.set_use_zenz_feedback_reuse(false);
+    effective_config = &request_config;
+  }
   const ConversionRequest conversion_request =
       ConversionRequestBuilder()
           .SetComposer(composer)
           .SetRequestView(*request_)
           .SetContextView(context)
-          .SetConfigView(*config_)
+          .SetConfigView(*effective_config)
           .SetOptions(std::move(options))
           .Build();
 
@@ -673,6 +683,9 @@ bool EngineConverter::Predict(const composer::Composer& composer,
   DCHECK(CheckState(COMPOSITION | SUGGESTION | CONVERSION | PREDICTION));
   ResetResult();
 
+  // Keep the focused suggestion's provenance until a replacement candidate
+  // list has actually been built. A failed expansion must not turn the held
+  // suggestion into an unrelated prediction.
   // Initialize the segments and conversion_request for prediction
   ConversionRequest::Options options;
   options.enable_user_history_for_conversion = preferences.use_history;
@@ -697,23 +710,36 @@ bool EngineConverter::Predict(const composer::Composer& composer,
        candidate_list_.size() > 0 && candidate_list_.focused() &&
        candidate_list_.focused_index() == candidate_list_.last_index());
 
-  segments_.clear_conversion_segments();
-
-  if (predict_expand || predict_first) {
-    const bool result = converter_->StartPredictionWithPreviousSuggestion(
-        conversion_request, previous_suggestions_, &segments_);
-    if (!result && predict_first) {
-      // Returns false if we failed at the first prediction.
-      // If predict_expand is true, it means we have prevous_suggestions_.
-      // So we can use it as the result of this prediction.
-      ResetState();
+  if (predict_expand) {
+    // Expansion is speculative: preserve the held suggestion and its focused
+    // candidate if the predictor fails or produces no usable candidates.
+    // In particular, never rebuild CandidateList from an empty Segments.
+    Segments expanded = segments_;
+    expanded.clear_conversion_segments();
+    if (!converter_->StartPredictionWithPreviousSuggestion(
+            conversion_request, previous_suggestions_, &expanded) ||
+        expanded.conversion_segments_size() != 1 ||
+        expanded.conversion_segment(0).candidates_size() == 0) {
       return false;
     }
+    segments_ = std::move(expanded);
   } else {
-    converter_->PrependCandidates(conversion_request, previous_suggestions_,
-                                  &segments_);
+    segments_.clear_conversion_segments();
+    if (predict_first) {
+      if (!converter_->StartPredictionWithPreviousSuggestion(
+              conversion_request, previous_suggestions_, &segments_)) {
+        ResetState();
+        return false;
+      }
+    } else {
+      converter_->PrependCandidates(conversion_request, previous_suggestions_,
+                                    &segments_);
+    }
   }
 
+  // This marker refers to the old displayed suggestion IDs. It must only be
+  // invalidated after successfully replacing that list.
+  focused_suggestion_for_learning_ = false;
   segment_index_ = 0;
   state_ = PREDICTION;
   UpdateCandidateList();
@@ -732,17 +758,60 @@ void EngineConverter::MaybeExpandPrediction(
       candidate_list_.focused_index() != candidate_list_.last_index()) {
     return;
   }
+  // A displayed suggestion can be held while a trailing romaji is pending.
+  // Do not merge that stale list into a prediction for a different key.
+  // On a matching key the original end-of-list expansion remains available.
+  if (focused_suggestion_for_learning_ &&
+      previous_suggestions_.key() != composer.GetQueryForPrediction()) {
+    return;
+  }
 
   DCHECK(CheckState(PREDICTION));
   ResetResult();
 
-  const size_t previous_index = candidate_list_.focused_index();
+  // Candidate indices and integer IDs are local to one prediction result.
+  // Preserve the focused candidate by its reading and surface, rather than
+  // interpreting an old index as a candidate in a newly generated list.
+  if (segments_.conversion_segments_size() != 1) {
+    return;
+  }
+  const Segment& previous_segment = segments_.conversion_segment(0);
+  const int previous_id = candidate_list_.focused_id();
+  if (!previous_segment.is_valid_index(previous_id)) {
+    return;
+  }
+  const converter::Candidate& previous_candidate =
+      previous_segment.candidate(previous_id);
+  const std::string previous_key = previous_candidate.key;
+  const std::string previous_value = previous_candidate.value;
   if (!Predict(composer, conversion_preferences_)) {
     return;
   }
 
-  DCHECK_LT(previous_index, candidate_list_.size());
-  candidate_list_.MoveToId(candidate_list_.candidate(previous_index).id());
+  // Successful expansion always has a nonempty regular candidate list (the
+  // speculative Predict path rejects empty results). The old candidate may
+  // have moved, disappeared, or received a different numeric candidate ID.
+  const Segment& expanded_segment = segments_.conversion_segment(0);
+  bool restored = false;
+  for (size_t i = 0; i < candidate_list_.size(); ++i) {
+    const Candidate& item = candidate_list_.candidate(i);
+    if (item.HasSubcandidateList() ||
+        !expanded_segment.is_valid_index(item.id())) {
+      continue;
+    }
+    const converter::Candidate& candidate =
+        expanded_segment.candidate(item.id());
+    if (candidate.key == previous_key && candidate.value == previous_value) {
+      restored = candidate_list_.MoveToId(item.id());
+      break;
+    }
+  }
+  if (!restored) {
+    // No equivalent candidate survived: do not select an unrelated result at
+    // the old integer index. CandidateNext() will wrap from here to the new
+    // first candidate. This also works when the expanded list shrinks.
+    candidate_list_.MoveLast();
+  }
   UpdateSelectedCandidateIndex();
 }
 
@@ -798,11 +867,21 @@ void EngineConverter::Commit(const composer::Composer& composer,
   CommitSegmentsSize(state_, context);
   DCHECK(request_);
   DCHECK(config_);
+  // A suggestion promoted to a focused prediction still represents the
+  // original explicitly selected suggestion.  Do not lose that provenance
+  // when Session switches to CONVERSION and uses the ordinary Commit path.
+  // This marker is set only by successful suggestion-list focus and cleared
+  // on a fresh conversion, prediction, cancellation, or completed commit.
+  ConversionRequest::Options options;
+  options.enable_verified_suggestion_segment_learning =
+      focused_suggestion_for_learning_ && !request_->mixed_conversion() &&
+      !request_->zero_query_suggestion() && conversion_preferences_.use_history;
   const ConversionRequest conversion_request = ConversionRequestBuilder()
                                                    .SetComposer(composer)
                                                    .SetRequestView(*request_)
                                                    .SetContextView(context)
                                                    .SetConfigView(*config_)
+                                                   .SetOptions(options)
                                                    .Build();
   converter_->FinishConversion(conversion_request, &segments_);
   ResetState();
@@ -1021,6 +1100,29 @@ bool EngineConverter::ConfirmExternalConversionLearning(uint64_t revert_id) {
   return true;
 }
 
+// The successful successor and the old owner share the same backing
+// converter. Move opaque rollback tokens exactly once; Clone() must
+// continue to drop ownership in ordinary snapshots/Undo contexts.
+bool EngineConverter::TransferExternalConversionLearningOwnershipTo(
+    EngineConverterInterface* successor) {
+  if (successor == nullptr || successor == this) {
+    return false;
+  }
+  return successor->ReceiveExternalConversionLearningOwnership(
+      converter_.get(), &external_learning_revert_segments_);
+}
+
+bool EngineConverter::ReceiveExternalConversionLearningOwnership(
+    const ConverterInterface* source_backend,
+    std::vector<Segments>* handles) {
+  if (source_backend == nullptr || source_backend != converter_.get() ||
+      handles == nullptr || !external_learning_revert_segments_.empty()) {
+    return false;
+  }
+  external_learning_revert_segments_ = std::move(*handles);
+  return true;
+}
+
 bool EngineConverter::ResolveExternalConversionSegments(
     absl::string_view key, absl::string_view value,
     const commands::Context& context,
@@ -1151,11 +1253,19 @@ bool EngineConverter::CommitSuggestionInternal(
     }
     CommitSegmentsSize(EngineConverterInterface::SUGGESTION, context);
     DCHECK(config_);
+    // Only a complete desktop suggestion commit may request a separate
+    // learning view. The ordinary commit, output, and undo ownership stay
+    // unchanged; mobile/mixed and zero-query commits retain their old path.
+    ConversionRequest::Options options;
+    options.enable_verified_suggestion_segment_learning =
+        !request_->mixed_conversion() && !request_->zero_query_suggestion() &&
+        conversion_preferences_.use_history;
     const ConversionRequest conversion_request = ConversionRequestBuilder()
                                                      .SetComposer(composer)
                                                      .SetRequestView(*request_)
                                                      .SetContextView(context)
                                                      .SetConfigView(*config_)
+                                                     .SetOptions(options)
                                                      .Build();
     converter_->FinishConversion(conversion_request, &segments_);
     DCHECK_EQ(0, segments_.conversion_segments_size());
@@ -1577,6 +1687,7 @@ bool EngineConverter::FocusSuggestionCandidateWithoutPrediction(const int id) {
 
   // Keep the exact displayed suggestion segments/candidate IDs.  Transition
   // only the state needed for focused candidate navigation.
+  focused_suggestion_for_learning_ = true;
   state_ = PREDICTION;
   request_type_ = ConversionRequest::PREDICTION;
   segment_index_ = 0;
@@ -1587,10 +1698,10 @@ bool EngineConverter::FocusSuggestionCandidateWithoutPrediction(const int id) {
   candidate_list_.set_focused(true);
   candidate_list_visible_ = true;
 
-  // CandidateNext() expands a prediction at the end only when
-  // previous_suggestions_ is non-empty.  Clearing it keeps navigation inside
-  // the held list and prevents a later pending-Roman prediction refresh.
-  previous_suggestions_.clear();
+  // Keep the displayed suggestion snapshot for normal end-of-list
+  // expansion. MaybeExpandPrediction refuses stale composer keys; an actual
+  // Predict() resets focused_suggestion_for_learning_ because the list
+  // changes and the original suggestion provenance no longer applies.
 
   UpdateSelectedCandidateIndex();
   SegmentFocus();
@@ -1644,11 +1755,12 @@ void EngineConverter::CandidateMoveToId(const int id,
   ResetResult();
 
   if (CheckState(SUGGESTION)) {
-    // This method makes a candidate focused but SUGGESTION state cannot
-    // have focused candidate.
-    // To solve this conflict we call Predict() method to transit to
-    // PREDICTION state, on which existence of focused candidate is acceptable.
-    Predict(composer);
+    // The candidate ID belongs to the displayed suggestion list, not to a
+    // regenerated prediction list. Preserve the exact selected candidate and
+    // its provenance across Session's later CONVERSION-state commit.
+    // Invalid/stale IDs fail closed instead of being reinterpreted.
+    (void)FocusSuggestionCandidateWithoutPrediction(id);
+    return;
   }
   DCHECK(CheckState(PREDICTION | CONVERSION));
 
@@ -1810,7 +1922,12 @@ void EngineConverter::FillOutput(const composer::Composer& composer,
   // All candidate words
   if (CheckState(SUGGESTION | PREDICTION | CONVERSION)) {
     FillAllCandidateWords(output->mutable_all_candidate_words());
-    if (request_->fill_incognito_candidate_words()) {
+    // The bounds check must happen before mutable_incognito_candidate_words()
+    // so that the field is not materialized (and hence
+    // has_incognito_candidate_words() stays false) when the incognito
+    // prediction produced no segments.
+    if (request_->fill_incognito_candidate_words() &&
+        segment_index_ < incognito_segments_.conversion_segments_size()) {
       FillIncognitoCandidateWords(output->mutable_incognito_candidate_words());
     }
   }
@@ -1845,6 +1962,7 @@ EngineConverter* EngineConverter::Clone() const {
 void EngineConverter::ResetResult() { result_.Clear(); }
 
 void EngineConverter::ResetState() {
+  focused_suggestion_for_learning_ = false;
   state_ = COMPOSITION;
   segment_index_ = 0;
   previous_suggestions_.clear();
@@ -2318,6 +2436,11 @@ void EngineConverter::FillAllCandidateWords(
 
 void EngineConverter::FillIncognitoCandidateWords(
     commands::CandidateList* candidates) const {
+  // |incognito_segments_| can be empty when the incognito prediction failed
+  // to produce suggestions (e.g. no user history in incognito mode).  The
+  // caller (FillOutput) checks the size before materializing the output field,
+  // so this precondition is guaranteed to hold here.
+  DCHECK_LT(segment_index_, incognito_segments_.conversion_segments_size());
   const Segment& segment =
       incognito_segments_.conversion_segment(segment_index_);
   for (size_t i = 0; i < segment.candidates_size(); ++i) {

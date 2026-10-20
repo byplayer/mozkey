@@ -346,7 +346,7 @@ message Config {
   // after normal live conversion has been computed. Normally the Mozc result is
   // already visible during this delay; deferred presentation can keep the
   // previous preedit visible instead.
-  optional uint32 zenz_live_correction_delay_msec = 1004 [default = 1000];
+  optional uint32 zenz_live_correction_delay_msec = 1004 [default = 700];
 
   // Keep the pre-Zenz preedit visible while Zenz live correction is pending.
   // Mozc conversion still runs first and remains the validation baseline and
@@ -384,11 +384,32 @@ message Config {
   // Debug logging for zenz live correction.
   optional bool zenz_live_correction_debug = 1010 [default = false];
 
-  // Record and reuse local feedback for zenz live correction.
-  // This stores only local TSV data and never sends feedback outside the machine.
-  // Raw left context is not stored. Mozkey enables this by default in
-  // ConfigHandler.
+  // Legacy combined Zenz feedback switch (recording, automatic reuse, and
+  // Zenz-to-Mozc history learning). Keep field 1011 for configuration backward
+  // compatibility. The three independent fields below inherit this value
+  // when absent; do not reuse or renumber this field.
+  // The legacy runtime and settings dialog continue to use 1011 in Phase 1.
   optional bool use_zenz_feedback_learning = 1011 [default = false];
+
+  // Independent learning permissions. ConfigHandler applies the legacy setting
+  // to each missing field, or enables all three for a fresh Mozkey profile.
+  // Raw left context is never stored by the feedback TSV.
+  // Automatic recording of accepted and rejected Zenz observations.
+  optional bool use_zenz_feedback_recording = 1041 [default = false];
+
+  // Automatic use of saved feedback for ranking, fast reuse and auto-block.
+  // Explicit user hard blocks are outside this switch.
+  optional bool use_zenz_feedback_reuse = 1042 [default = false];
+
+  // Additional Mozc user-history learning from explicitly accepted Zenz
+  // corrections. The Mozc history and input-privacy policies still apply.
+  optional bool use_zenz_mozc_history_learning = 1043 [default = false];
+
+  // Exclude short full-sequence readings from automatic Zenz feedback
+  // promotion, fast reuse, and rejection. Explicit manual hard blocks
+  // remain effective. Recording and Mozc history are not affected.
+  optional bool use_zenz_feedback_min_key_length = 1039 [default = true];
+  optional uint32 zenz_feedback_min_key_length = 1040 [default = 7];
 
   // When enabled, repeated divergent commits of the same full-sequence Zenz
   // correction dynamically suppress that correction as an effective block.
@@ -704,6 +725,7 @@ message Config {
     WINDOWS_IME_ICON_DEFAULT = 0;
     WINDOWS_IME_ICON_MONOCHROME_BLACK = 1;
     WINDOWS_IME_ICON_MONOCHROME_WHITE = 2;
+    WINDOWS_IME_ICON_MONOCHROME_HIGH_CONTRAST = 3;
   }
   optional WindowsImeIconStyle windows_ime_icon_style = 163
       [default = WINDOWS_IME_ICON_DEFAULT];
